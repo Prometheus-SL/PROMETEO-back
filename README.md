@@ -4,12 +4,24 @@ Servidor backend para el proyecto PROMETEO con soporte para WebSocket y API REST
 
 ## 🚀 Características
 
+### Backend
+
 - **Express.js** - Framework web rápido y minimalista
 - **Socket.io** - Comunicación WebSocket en tiempo real
+- **MongoDB** - Base de datos NoSQL con Mongoose
+- **JWT** - Autenticación segura con tokens
 - **CORS** - Soporte para Cross-Origin Resource Sharing
 - **Helmet** - Middleware de seguridad
 - **Morgan** - Logging de peticiones HTTP
-- **Compresión** - Compresión gzip automática
+
+### Control Remoto
+
+- **Monitoreo en tiempo real** de equipos de usuarios
+- **Control remoto** de funciones del sistema (volumen, bloqueo, energía)
+- **Ejecución de comandos** administrativos
+- **Gestión centralizada** de flotas de equipos
+- **Autenticación por roles** (admin/operator/viewer)
+- **API Keys** para agentes seguros
 
 ## 📁 Estructura del Proyecto
 
@@ -125,17 +137,36 @@ socket.on("agent-disconnected", (agent) => {
 - Todos los eventos incluyen timestamps automáticos
 - Los errores de conexión se manejan automáticamente con reconexión
 
-
 ## 🌐 API REST
 
-### Endpoints Disponibles
+### Endpoints de Sistema
 
 - `GET /` - Información general del servidor
 - `GET /health` - Estado de salud del servidor
-- `GET /api/v1/agents` - Información de agentes conectados
 - `GET /api/v1/stats` - Estadísticas del servidor
-- `POST /api/v1/agents/command` - Enviar comando a agentes
-- `GET /api/v1/data/latest` - Obtener último dato recibido
+
+### Autenticación
+
+- `POST /auth/login` - Iniciar sesión
+- `POST /auth/register` - Registrar usuario
+- `GET /auth/me` - Info del usuario actual
+- `POST /auth/refresh` - Renovar tokens
+
+### Gestión de Agentes
+
+- `GET /api/v1/agents` - Listar agentes conectados
+- `POST /api/v1/agents` - Registrar nuevo agente
+- `GET /api/v1/agents/:id/data` - Datos de un agente
+- `PATCH /api/v1/agents/:id` - Actualizar agente
+
+### Control Remoto
+
+- `POST /control/command` - Ejecutar comando en agente
+- `POST /control/commands/batch` - Comandos en lote
+- `POST /control/volume` - Control de volumen
+- `POST /control/lock` - Bloquear/desbloquear pantalla
+- `POST /control/power` - Control de energía
+- `POST /control/message` - Enviar mensaje al usuario
 
 ### Ejemplos de Uso
 

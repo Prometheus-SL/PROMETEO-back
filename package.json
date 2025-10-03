@@ -1,11 +1,14 @@
 {
   "name": "prometeo-backend",
   "version": "1.0.0",
-  "description": "Backend server para el proyecto PROMETEO con soporte para WebSocket",
+  "description": "Backend server para el proyecto PROMETEO",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
+    "setup:admin": "node scripts/create-admin.js",
+    "setup:agent": "node scripts/create-agent.js",
+    "setup:all": "npm run setup:admin && npm run setup:agent",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -17,13 +20,19 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "express": "^4.18.2",
-    "socket.io": "^4.7.5",
+    "bcryptjs": "^3.0.2",
+    "compression": "^1.7.4",
     "cors": "^2.8.5",
-    "helmet": "^7.1.0",
     "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.18.3",
     "morgan": "^1.10.0",
-    "compression": "^1.7.4"
+    "socket.io": "^4.7.5",
+    "uuid": "^13.0.0",
+    "validator": "^13.15.15"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

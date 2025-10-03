@@ -38,6 +38,8 @@ app.get('/health', (req, res) => {
 
 // Importar rutas y middleware
 const apiRoutes = require('./routes/api');
+const authRoutes = require('./routes/auth');
+const controlRoutes = require('./routes/control');
 const { errorHandler, customLogger } = require('./middleware/errorHandler');
 
 // Middleware de logging personalizado
@@ -45,6 +47,8 @@ app.use(customLogger);
 
 // Configurar rutas
 app.use('/api/v1', apiRoutes);
+app.use('/auth', authRoutes);
+app.use('/control', controlRoutes);
 
 // Ruta de bienvenida
 app.get('/', (req, res) => {
