@@ -20,12 +20,13 @@ app.use(morgan('combined'));
 // Middleware de CORS
 app.use(cors({
     origin: process.env.CLIENT_URL || 'http://localhost:3001',
-    credentials: true,
+    credentials: false,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"]
+    allowedHeaders: ["Content-Type", "Authorization"],
+    optionsSuccessStatus: 200
 }));
 
-app.options('*', cors()); // habilitar preflight para todas las rutas
+app.options("*", (_req, res) => res.sendStatus(204)); // por si acaso
 
 // Middleware para parsear JSON
 app.use(express.json());
