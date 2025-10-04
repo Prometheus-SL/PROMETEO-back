@@ -2,7 +2,11 @@ const express = require('express');
 const { authenticateToken, authorizeRole } = require('../middleware/auth');
 const Agent = require('../models/Agent');
 const Command = require('../models/Command');
-const { v4: uuidv4 } = require('uuid');
+let uuidv4;
+
+import('uuid').then(module => {
+    uuidv4 = module.v4; // Cambia esto
+});
 
 const router = express.Router();
 
