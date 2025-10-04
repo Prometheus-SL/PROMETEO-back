@@ -26,6 +26,8 @@ app.use(cors({
     optionsSuccessStatus: 200
 }));
 
+console.log(`Activado CORS para ${process.env.CLIENT_URL || 'http://localhost:3001'}`);
+
 app.options("*", (_req, res) => res.sendStatus(204)); // por si acaso
 
 // Middleware para parsear JSON
