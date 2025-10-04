@@ -14,11 +14,33 @@ connectDB();
 const server = http.createServer(app);
 
 // Configurar Socket.io
+// Configurar CORS para Socket.io coherente con Express
+const parseOrigins = (value) => {
+    if (!value) return ['http://localhost:3001'];
+    return value
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+};
+const allowedOrigins = parseOrigins(process.env.CORS_ORIGINS || process.env.CLIENT_URL);
+const allowCredentials = String(process.env.CORS_CREDENTIALS).toLowerCase() === 'true';
+
 const io = new Server(server, {
     cors: {
-        origin: process.env.CLIENT_URL || 'http://localhost:3001',
+        origin: (origin, callback) => {
+            if (!origin) return callback(null, true);
+            if (allowedOrigins.includes(origin)) return callback(null, true);
+            // Permitir regex tipo /regex/
+            const ok = allowedOrigins.some(o => {
+                if (o.startsWith('/') && o.endsWith('/')) {
+                    try { return new RegExp(o.slice(1, -1)).test(origin); } catch { return false; }
+                }
+                return false;
+            });
+            callback(null, ok);
+        },
         methods: ['GET', 'POST'],
-        credentials: true
+        credentials: allowCredentials
     },
     pingTimeout: 60000,
     pingInterval: 25000
@@ -229,7 +251,7 @@ app.set('io', io);
 server.listen(PORT, () => {
     console.log(`🚀 Servidor PROMETEO funcionando en puerto ${PORT}`);
     console.log(`📡 WebSocket listo para conexiones`);
-    console.log(`🌐 CORS habilitado para: ${process.env.CLIENT_URL || 'http://localhost:3001'}`);
+    console.log(`🌐 CORS habilitado para: ${allowedOrigins.join(', ')} | credenciales: ${allowCredentials}`);
 });
 
 // Manejo de errores del servidor

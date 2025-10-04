@@ -8,6 +8,11 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Si estamos detrás de un proxy (Traefik/Nginx), habilitar trust proxy si se indica
+if (process.env.TRUST_PROXY === 'true') {
+    app.set('trust proxy', 1);
+}
+
 // Middleware de seguridad
 app.use(helmet());
 
@@ -17,18 +22,49 @@ app.use(compression());
 // Middleware de logs
 app.use(morgan('combined'));
 
-// Middleware de CORS
-app.use(cors({
-    origin: process.env.CLIENT_URL || 'http://localhost:3001',
-    credentials: false,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    optionsSuccessStatus: 200
-}));
+// Utilidad para leer lista de orígenes permitidos (coma) o regex entre /.../
+const parseOrigins = (value) => {
+    if (!value) return ['http://localhost:3001'];
+    return value
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+};
 
-console.log(`Activado CORS para ${process.env.CLIENT_URL || 'http://localhost:3001'}`);
+const allowedOrigins = parseOrigins(process.env.CORS_ORIGINS || process.env.CLIENT_URL);
+const allowCredentials = String(process.env.CORS_CREDENTIALS).toLowerCase() === 'true';
 
-app.options("*", (_req, res) => res.sendStatus(204)); // por si acaso
+const isOriginAllowed = (origin) => {
+    if (!origin) return true; // permitir herramientas/no navegador y same-origin
+    if (allowedOrigins.includes(origin)) return true;
+    // Soportar patrones regex escritos como /regex/
+    return allowedOrigins.some(o => {
+        if (o.startsWith('/') && o.endsWith('/')) {
+            try {
+                const re = new RegExp(o.slice(1, -1));
+                return re.test(origin);
+            } catch (_) {
+                return false;
+            }
+        }
+        return false;
+    });
+};
+
+const corsOptions = {
+    origin: (origin, callback) => callback(null, isOriginAllowed(origin)),
+    credentials: allowCredentials,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    // allowedHeaders undefined => se reflejan los enviados en Access-Control-Request-Headers
+    optionsSuccessStatus: 204,
+    preflightContinue: false
+};
+
+// Middleware de CORS (colocado pronto para que el preflight no lo bloquee nada)
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
+console.log(`CORS habilitado. Orígenes permitidos: ${allowedOrigins.join(', ')} | credenciales: ${allowCredentials}`);
 
 // Middleware para parsear JSON
 app.use(express.json());
