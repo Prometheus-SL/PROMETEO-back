@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const { authenticateToken, authorizeRole, authenticateAgent } = require('../middleware/auth');
 const Agent = require('../models/Agent');
 const AgentData = require('../models/AgentData');
@@ -412,6 +413,236 @@ router.patch('/agents/:agentId', authenticateToken, authorizeRole('admin', 'oper
             success: false,
             error: 'Error interno del servidor'
         });
+    }
+});
+
+// =============================
+// Gestión de Usuarios (Admin)
+// =============================
+
+// Listar usuarios con paginación y búsqueda (solo admin)
+router.get('/users', authenticateToken, authorizeRole('admin'), async (req, res) => {
+    try {
+        const { page = 1, limit = 10, search = '', role, isActive } = req.query;
+
+        const query = {};
+        if (search) {
+            query.$or = [
+                { username: { $regex: search, $options: 'i' } },
+                { email: { $regex: search, $options: 'i' } },
+                { name: { $regex: search, $options: 'i' } },
+                { surname: { $regex: search, $options: 'i' } }
+            ];
+        }
+        if (role) query.role = role;
+        if (isActive !== undefined) query.isActive = isActive === 'true';
+
+        const users = await User.find(query)
+            .select('-password -refreshTokens')
+            .limit(limit * 1)
+            .skip((page - 1) * limit)
+            .sort({ createdAt: -1 });
+
+        const total = await User.countDocuments(query);
+
+        res.json({
+            success: true,
+            data: {
+                users,
+                pagination: {
+                    current: page * 1,
+                    pages: Math.ceil(total / limit),
+                    total
+                }
+            }
+        });
+    } catch (error) {
+        console.error('Error listando usuarios:', error);
+        res.status(500).json({ success: false, error: 'Error interno del servidor' });
+    }
+});
+
+// Crear usuario (solo admin)
+router.post('/users', authenticateToken, authorizeRole('admin'), async (req, res) => {
+    try {
+        const { username, email, password, role = 'user', name, surname, birthday, isActive = true } = req.body;
+
+        if (!username || !email || !password) {
+            return res.status(400).json({ success: false, error: 'Username, email y password son requeridos' });
+        }
+        if (password.length < 6) {
+            return res.status(400).json({ success: false, error: 'La contraseña debe tener al menos 6 caracteres' });
+        }
+
+        const exists = await User.findOne({ $or: [{ username }, { email }] });
+        if (exists) {
+            return res.status(409).json({ success: false, error: 'Usuario o email ya existe' });
+        }
+
+        const newUser = new User({ username, email, password, role, name, surname, birthday, isActive });
+        await newUser.save();
+
+        res.status(201).json({
+            success: true,
+            message: 'Usuario creado exitosamente',
+            data: { user: newUser.toJSON() }
+        });
+    } catch (error) {
+        console.error('Error creando usuario:', error);
+        if (error.name === 'ValidationError') {
+            const details = Object.values(error.errors).map(e => e.message);
+            return res.status(400).json({ success: false, error: 'Error de validación', details });
+        }
+        res.status(500).json({ success: false, error: 'Error interno del servidor' });
+    }
+});
+
+// Obtener detalle de usuario por ID (solo admin)
+router.get('/users/:id', authenticateToken, authorizeRole('admin'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, error: 'ID de usuario inválido' });
+        }
+        const user = await User.findById(id).select('-password -refreshTokens');
+        if (!user) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+        res.json({ success: true, data: { user } });
+    } catch (error) {
+        console.error('Error obteniendo usuario:', error);
+        res.status(500).json({ success: false, error: 'Error interno del servidor' });
+    }
+});
+
+// Actualizar datos de usuario (solo admin, sin password/rol)
+router.patch('/users/:id', authenticateToken, authorizeRole('admin'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, error: 'ID de usuario inválido' });
+        }
+        const allowed = ['email', 'name', 'surname', 'birthday', 'isActive'];
+        const updates = {};
+        for (const k of allowed) if (req.body[k] !== undefined) updates[k] = req.body[k];
+
+        const user = await User.findByIdAndUpdate(id, updates, { new: true, runValidators: true })
+            .select('-password -refreshTokens');
+        if (!user) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+
+        res.json({ success: true, message: 'Usuario actualizado', data: { user } });
+    } catch (error) {
+        console.error('Error actualizando usuario:', error);
+        if (error.name === 'ValidationError') {
+            const details = Object.values(error.errors).map(e => e.message);
+            return res.status(400).json({ success: false, error: 'Error de validación', details });
+        }
+        res.status(500).json({ success: false, error: 'Error interno del servidor' });
+    }
+});
+
+// Cambiar rol de usuario (solo admin)
+router.patch('/users/:id/role', authenticateToken, authorizeRole('admin'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { role } = req.body;
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, error: 'ID de usuario inválido' });
+        }
+        if (!['admin', 'user'].includes(role)) {
+            return res.status(400).json({ success: false, error: 'Rol inválido' });
+        }
+        // Prevenir que un admin se quite a sí mismo si es el único admin (opcional: requiere conteo)
+        const user = await User.findByIdAndUpdate(id, { role }, { new: true, runValidators: true })
+            .select('-password -refreshTokens');
+        if (!user) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+        res.json({ success: true, message: 'Rol actualizado', data: { user } });
+    } catch (error) {
+        console.error('Error actualizando rol:', error);
+        res.status(500).json({ success: false, error: 'Error interno del servidor' });
+    }
+});
+
+// Activar/Desactivar usuario (solo admin)
+router.patch('/users/:id/status', authenticateToken, authorizeRole('admin'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { isActive } = req.body;
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, error: 'ID de usuario inválido' });
+        }
+        if (typeof isActive !== 'boolean') {
+            return res.status(400).json({ success: false, error: 'isActive debe ser booleano' });
+        }
+        // Evitar que un admin se desactive a sí mismo
+        if (req.user._id.toString() === id && isActive === false) {
+            return res.status(400).json({ success: false, error: 'No puedes desactivar tu propio usuario' });
+        }
+        const user = await User.findByIdAndUpdate(id, { isActive }, { new: true, runValidators: true })
+            .select('-password -refreshTokens');
+        if (!user) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+        res.json({ success: true, message: 'Estado actualizado', data: { user } });
+    } catch (error) {
+        console.error('Error actualizando estado:', error);
+        res.status(500).json({ success: false, error: 'Error interno del servidor' });
+    }
+});
+
+// Resetear contraseña (solo admin)
+router.post('/users/:id/reset-password', authenticateToken, authorizeRole('admin'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { password } = req.body;
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, error: 'ID de usuario inválido' });
+        }
+        if (!password || password.length < 6) {
+            return res.status(400).json({ success: false, error: 'Password requerido y debe tener al menos 6 caracteres' });
+        }
+        const user = await User.findById(id).select('+password');
+        if (!user) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+        user.password = password; // será hasheado por el pre-save
+        await user.save();
+        res.json({ success: true, message: 'Contraseña actualizada correctamente' });
+    } catch (error) {
+        console.error('Error reseteando contraseña:', error);
+        res.status(500).json({ success: false, error: 'Error interno del servidor' });
+    }
+});
+
+// Revocar todos los refresh tokens (logout de todos los dispositivos) (solo admin)
+router.post('/users/:id/logout-all', authenticateToken, authorizeRole('admin'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, error: 'ID de usuario inválido' });
+        }
+        const user = await User.findById(id);
+        if (!user) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+        user.refreshTokens = [];
+        await user.save();
+        res.json({ success: true, message: 'Tokens revocados correctamente' });
+    } catch (error) {
+        console.error('Error revocando tokens:', error);
+        res.status(500).json({ success: false, error: 'Error interno del servidor' });
+    }
+});
+
+// Eliminar usuario (solo admin)
+router.delete('/users/:id', authenticateToken, authorizeRole('admin'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, error: 'ID de usuario inválido' });
+        }
+        // Evitar que un admin se borre a sí mismo
+        if (req.user._id.toString() === id) {
+            return res.status(400).json({ success: false, error: 'No puedes eliminar tu propio usuario' });
+        }
+        const deleted = await User.findByIdAndDelete(id);
+        if (!deleted) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+        res.json({ success: true, message: 'Usuario eliminado correctamente' });
+    } catch (error) {
+        console.error('Error eliminando usuario:', error);
+        res.status(500).json({ success: false, error: 'Error interno del servidor' });
     }
 });
 
