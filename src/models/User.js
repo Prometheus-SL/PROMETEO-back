@@ -29,6 +29,19 @@ const userSchema = new mongoose.Schema({
         enum: ['admin', 'user'],
         default: 'user'
     },
+    name: {
+        type: String,
+        trim: true,
+        maxlength: [50, 'Name no puede exceder 50 caracteres']
+    },
+    surname: {
+        type: String,
+        trim: true,
+        maxlength: [50, 'Surname no puede exceder 50 caracteres']
+    },
+    birthday: {
+        type: Date
+    },
     isActive: {
         type: Boolean,
         default: true

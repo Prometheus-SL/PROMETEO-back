@@ -117,7 +117,7 @@ router.post('/login', loginLimiter, async (req, res) => {
 // POST /auth/register
 router.post('/register', registerLimiter, async (req, res) => {
     try {
-        const { username, email, password, role = 'viewer' } = req.body;
+        const { username, email, password, name, surname, birthday } = req.body;
 
         // Validar datos de entrada
         if (!username || !email || !password) {
@@ -152,7 +152,10 @@ router.post('/register', registerLimiter, async (req, res) => {
             username,
             email,
             password,
-            role: ['admin', 'operator', 'viewer'].includes(role) ? role : 'viewer'
+            role: "user",
+            name,
+            surname,
+            birthday
         });
 
         await newUser.save();
@@ -165,7 +168,10 @@ router.post('/register', registerLimiter, async (req, res) => {
                     id: newUser._id,
                     username: newUser.username,
                     email: newUser.email,
-                    role: newUser.role
+                    role: newUser.role,
+                    name: newUser.name,
+                    surname: newUser.surname,
+                    birthday: newUser.birthday
                 }
             }
         });
@@ -200,7 +206,9 @@ router.get('/me', authenticateToken, (req, res) => {
                 email: req.user.email,
                 role: req.user.role,
                 lastLogin: req.user.lastLogin,
-                createdAt: req.user.createdAt
+                name: req.user.name,
+                surname: req.user.surname,
+                birthday: req.user.birthday,
             }
         }
     });
