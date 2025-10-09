@@ -241,11 +241,9 @@ router.post('/refresh', verifyRefreshToken, async (req, res) => {
         res.json({
             success: true,
             data: {
-                tokens: {
-                    accessToken,
-                    refreshToken: newRefreshToken,
-                    expiresIn: process.env.JWT_EXPIRES_IN || '15m'
-                }
+                accessToken,
+                refreshToken: newRefreshToken,
+                expiresIn: process.env.JWT_EXPIRES_IN || '15m'
             }
         });
 
