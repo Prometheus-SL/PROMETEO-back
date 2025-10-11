@@ -26,22 +26,6 @@ const allowedOrigins = parseOrigins(process.env.CORS_ORIGINS || process.env.CLIE
 const allowCredentials = String(process.env.CORS_CREDENTIALS).toLowerCase() === 'true';
 
 const io = new Server(server, {
-    cors: {
-        origin: (origin, callback) => {
-            if (!origin) return callback(null, true);
-            if (allowedOrigins.includes(origin)) return callback(null, true);
-            // Permitir regex tipo /regex/
-            const ok = allowedOrigins.some(o => {
-                if (o.startsWith('/') && o.endsWith('/')) {
-                    try { return new RegExp(o.slice(1, -1)).test(origin); } catch { return false; }
-                }
-                return false;
-            });
-            callback(null, ok);
-        },
-        methods: ['GET', 'POST'],
-        credentials: allowCredentials
-    },
     pingTimeout: 60000,
     pingInterval: 25000
 });

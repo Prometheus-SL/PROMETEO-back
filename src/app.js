@@ -84,12 +84,14 @@ const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');
 const controlRoutes = require('./routes/control');
 const { errorHandler, customLogger } = require('./middleware/errorHandler');
+const dashboardRoutes = require('./routes/dashboard');
 
 // Middleware de logging personalizado
 app.use(customLogger);
 
 // Configurar rutas
 app.use('/api/v1', apiRoutes);
+app.use('/api/v1/dashboard', dashboardRoutes);
 app.use('/auth', authRoutes);
 app.use('/control', controlRoutes);
 
