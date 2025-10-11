@@ -168,6 +168,21 @@ socket.on("agent-disconnected", (agent) => {
 - `POST /control/power` - Control de energía
 - `POST /control/message` - Enviar mensaje al usuario
 
+### Dashboards/Páginas por Usuario
+
+- `GET /api/v1/dashboard/pages` - Listar mis páginas
+- `GET /api/v1/dashboard/pages/active` - Obtener mi página activa
+- `GET /api/v1/dashboard/pages/by-slug/:slug` - Obtener página por slug
+- `GET /api/v1/dashboard/pages/:id` - Detalle página
+- `POST /api/v1/dashboard/pages` - Crear página
+- `PATCH /api/v1/dashboard/pages/:id` - Actualizar página (activar, estilo, etc.)
+- `DELETE /api/v1/dashboard/pages/:id` - Eliminar página
+- `PATCH /api/v1/dashboard/pages/reorder` - Reordenar páginas
+- `POST /api/v1/dashboard/pages/:id/modules` - Añadir módulo
+- `PATCH /api/v1/dashboard/pages/:id/modules/:moduleId` - Actualizar módulo
+- `DELETE /api/v1/dashboard/pages/:id/modules/:moduleId` - Eliminar módulo
+- `PATCH /api/v1/dashboard/pages/:id/modules/reorder` - Actualizar layout en bloque
+
 ### Ejemplos de Uso
 
 ```bash
