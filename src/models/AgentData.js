@@ -22,8 +22,8 @@ const agentDataSchema = new mongoose.Schema({
             'software',          // Software instalado
             'alert',             // Alertas del sistema
             'command_response',  // Respuesta a comandos
-            'screenshot',        // Capturas de pantalla
-            'log'               // Logs del sistema
+            'media_update',        // Actualizaciones de medios
+            'log'                // Logs del sistema
         ],
         default: 'system_status'
     },

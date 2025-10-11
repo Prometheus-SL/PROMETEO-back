@@ -110,7 +110,7 @@ io.on('connection', (socket) => {
             const agentData = new AgentData({
                 agentId: agentId,
                 data: data,
-                dataType: data.type || 'sensor',
+                dataType: data.dataType || 'sensor',
                 priority: data.priority || 'normal',
                 tags: data.tags || [],
                 metadata: {
@@ -149,6 +149,7 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'Error procesando datos' });
         }
     });    // Evento para solicitar datos específicos al agente
+
     socket.on('request-agent-data', (request) => {
         // Reenviar solicitud a todos los agentes conectados
         socket.to('agents').emit('data-request', request);

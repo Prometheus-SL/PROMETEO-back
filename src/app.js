@@ -64,8 +64,6 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-console.log(`CORS habilitado. Orígenes permitidos: ${allowedOrigins.join(', ')} | credenciales: ${allowCredentials}`);
-
 // Middleware para parsear JSON
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
