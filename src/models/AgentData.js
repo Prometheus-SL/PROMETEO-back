@@ -13,6 +13,7 @@ const agentDataSchema = new mongoose.Schema({
     dataType: {
         type: String,
         enum: [
+            'sensor',            // Datos genéricos del agente
             'system_status',      // Estado general del sistema
             'performance',        // CPU, RAM, disco
             'network',           // Tráfico de red, conexiones
@@ -26,6 +27,11 @@ const agentDataSchema = new mongoose.Schema({
             'log'                // Logs del sistema
         ],
         default: 'system_status'
+    },
+    priority: {
+        type: String,
+        enum: ['low', 'normal', 'high', 'urgent'],
+        default: 'normal'
     },
     tags: [{
         type: String,

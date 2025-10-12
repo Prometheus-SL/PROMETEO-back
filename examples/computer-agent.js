@@ -10,7 +10,8 @@ class PrometeoAgent {
         this.config = {
             serverUrl: config.serverUrl || 'http://localhost:3000',
             agentId: config.agentId || `PC-${os.hostname()}`,
-            apiKey: config.apiKey || 'demo-api-key-change-in-production',
+            // token JWT del usuario propietario, obtenido desde /auth/agent/login
+            token: config.token || process.env.PROMETEO_TOKEN || null,
             monitoringInterval: config.monitoringInterval || 30000, // 30 segundos
             ...config
         };
@@ -57,10 +58,11 @@ class PrometeoAgent {
             console.log(`✅ Conectado al servidor PROMETEO: ${this.socket.id}`);
             this.isConnected = true;
 
-            // Identificarse como agente
+            // Identificarse como agente (enviar token obligatorio)
             this.socket.emit('identify', {
                 type: 'agent',
-                agentId: this.config.agentId
+                agentId: this.config.agentId,
+                token: this.config.token
             });
 
             // Enviar información inicial del sistema

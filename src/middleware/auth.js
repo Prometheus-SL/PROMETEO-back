@@ -43,6 +43,40 @@ const authenticateToken = async (req, res, next) => {
     }
 };
 
+// Middleware para verificar que un agentId pertenece al usuario autenticado
+const requireAgentOwnership = async (req, res, next) => {
+    try {
+        // Requiere que el usuario ya esté autenticado
+        if (!req.user) {
+            return res.status(401).json({ success: false, error: 'Usuario no autenticado' });
+        }
+
+        // Obtener agentId desde headers, body o params
+        const agentId = req.headers['x-agent-id'] || req.body.agentId || req.params.agentId;
+        if (!agentId) {
+            return res.status(400).json({ success: false, error: 'agentId es requerido' });
+        }
+
+        // Buscar agente que pertenezca al usuario
+    const agent = await Agent.findOne({ agentId, user: req.user._id });
+        if (!agent) {
+            return res.status(403).json({ success: false, error: 'El agente no pertenece al usuario autenticado' });
+        }
+
+        // Adjuntar agente a la request para uso en el handler
+        req.agent = agent;
+        // Asegurarnos que body.agentId coincide con el del agente
+        if (req.body && req.body.agentId && req.body.agentId !== agent.agentId) {
+            return res.status(403).json({ success: false, error: 'agentId no coincide con el agente del usuario' });
+        }
+
+        next();
+    } catch (error) {
+        console.error('Error verificando propiedad de agente:', error);
+        return res.status(500).json({ success: false, error: 'Error interno del servidor' });
+    }
+};
+
 // Middleware para verificar roles específicos
 const authorizeRole = (...roles) => {
     return (req, res, next) => {
@@ -206,6 +240,7 @@ module.exports = {
     authenticateToken,
     authorizeRole,
     authenticateAgent,
+    requireAgentOwnership,
     optionalAuth,
     generateTokens,
     verifyRefreshToken

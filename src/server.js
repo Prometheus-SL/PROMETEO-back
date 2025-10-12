@@ -42,7 +42,7 @@ io.on('connection', (socket) => {
 
     // Evento para identificar el tipo de cliente (agente o frontend)
     socket.on('identify', async (data) => {
-        const { type, agentId } = data;
+        const { type, agentId, token } = data;
 
         if (type === 'agent') {
             // Registrar agente
@@ -57,6 +57,62 @@ io.on('connection', (socket) => {
 
             socket.join('agents');
             console.log(`Agente registrado: ${finalAgentId}`);
+
+            // Validar token de usuario y propiedad del agente
+            try {
+                const jwt = require('jsonwebtoken');
+                const User = require('./models/User');
+                const AgentModel = require('./models/Agent');
+
+                if (!token) {
+                    socket.emit('error', { message: 'Token requerido para agentes' });
+                    return socket.disconnect(true);
+                }
+
+                let decoded;
+                try {
+                    decoded = jwt.verify(token, process.env.JWT_SECRET);
+                } catch (err) {
+                    socket.emit('error', { message: 'Token inválido o expirado' });
+                    return socket.disconnect(true);
+                }
+
+                const user = await User.findById(decoded.id);
+                if (!user || !user.isActive) {
+                    socket.emit('error', { message: 'Usuario no válido o inactivo' });
+                    return socket.disconnect(true);
+                }
+
+                // Verificar o asignar propiedad del agente
+                let agentDoc = await AgentModel.findOne({ agentId: finalAgentId });
+                if (!agentDoc) {
+                    // Crear agente básico vinculado a usuario si no existe
+                    const crypto = require('crypto');
+                    agentDoc = new AgentModel({
+                        agentId: finalAgentId,
+                        name: finalAgentId,
+                        description: 'Agente creado desde socket',
+                        apiKey: crypto.randomBytes(32).toString('hex'),
+                        user: user._id,
+                        status: 'offline'
+                    });
+                    await agentDoc.save();
+                } else if (!agentDoc.user) {
+                    agentDoc.user = user._id;
+                    await agentDoc.save();
+                } else if (String(agentDoc.user) !== String(user._id)) {
+                    socket.emit('error', { message: 'Este agente pertenece a otro usuario' });
+                    return socket.disconnect(true);
+                }
+
+                // Guardar info del usuario en el socket
+                socket.userId = user._id.toString();
+
+            } catch (error) {
+                console.error('Error validando agente/token:', error);
+                socket.emit('error', { message: 'Error de autenticación de agente' });
+                return socket.disconnect(true);
+            }
 
             // Actualizar estado en base de datos
             try {

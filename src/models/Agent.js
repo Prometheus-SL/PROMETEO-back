@@ -1,6 +1,13 @@
 const mongoose = require('mongoose');
 
 const agentSchema = new mongoose.Schema({
+    // Usuario propietario del agente
+    user: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        index: true,
+        required: false
+    },
     agentId: {
         type: String,
         required: [true, 'Agent ID es requerido'],
@@ -74,6 +81,11 @@ const agentSchema = new mongoose.Schema({
             default: 'medium'
         }
     },
+    // Ubicación opcional (usada por rutas/api)
+    location: {
+        type: String,
+        trim: true
+    },
     lastSeen: {
         type: Date
     },
@@ -99,6 +111,7 @@ const agentSchema = new mongoose.Schema({
 agentSchema.index({ status: 1 });
 agentSchema.index({ isOnline: 1 });
 agentSchema.index({ lastSeen: -1 });
+agentSchema.index({ user: 1, agentId: 1 });
 
 // Método para actualizar estado de conexión
 agentSchema.methods.updateConnectionStatus = function (isOnline, connectionInfo = {}) {

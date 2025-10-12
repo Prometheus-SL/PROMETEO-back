@@ -1,6 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const { authenticateToken, authorizeRole, authenticateAgent } = require('../middleware/auth');
+const { authenticateToken, authorizeRole, requireAgentOwnership } = require('../middleware/auth');
 const Agent = require('../models/Agent');
 const AgentData = require('../models/AgentData');
 const User = require('../models/User');
@@ -311,10 +311,10 @@ router.get('/agents/:agentId/data', authenticateToken, async (req, res) => {
     }
 });
 
-// Ruta para que los agentes envíen datos (autenticación por API Key)
-router.post('/agents/data', authenticateAgent, async (req, res) => {
+// Ruta para que los agentes envíen datos (autenticación por JWT del usuario propietario)
+router.post('/agents/data', authenticateToken, requireAgentOwnership, async (req, res) => {
     try {
-        const agent = req.agent;
+        const agent = req.agent; // establecido por requireAgentOwnership
         const { data, dataType = 'sensor', priority = 'normal', tags = [] } = req.body;
 
         if (!data) {

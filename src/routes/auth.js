@@ -117,6 +117,95 @@ router.post('/login', loginLimiter, async (req, res) => {
     }
 });
 
+// POST /auth/agent/login - Autenticación de agentes por email y contraseña
+router.post('/agent/login', loginLimiter, async (req, res) => {
+    try {
+        const { email, password, agentId } = req.body;
+
+        if (!email || !password || !agentId) {
+            return res.status(400).json({
+                success: false,
+                error: 'Email, contraseña y agentId son requeridos'
+            });
+        }
+
+        // Buscar usuario por email (activo) incluyendo password
+        const user = await User.findOne({ email: email.toLowerCase(), isActive: true }).select('+password');
+        if (!user) {
+            return res.status(401).json({ success: false, error: 'Credenciales inválidas' });
+        }
+
+        const valid = await user.matchPassword(password);
+        if (!valid) {
+            return res.status(401).json({ success: false, error: 'Credenciales inválidas' });
+        }
+
+        // Buscar o crear el agente por agentId
+        const Agent = require('../models/Agent');
+        let agent = await Agent.findOne({ agentId });
+        if (!agent) {
+            // Si el agente no existe, crearlo mínimamente y vincularlo
+            const crypto = require('crypto');
+            agent = new Agent({
+                agentId,
+                name: agentId,
+                description: 'Agente registrado por autenticación',
+                apiKey: crypto.randomBytes(32).toString('hex'),
+                user: user._id,
+                status: 'offline'
+            });
+            await agent.save();
+        } else if (!agent.user) {
+            // Vincular agente sin propietario
+            agent.user = user._id;
+            await agent.save();
+        } else if (String(agent.user) !== String(user._id)) {
+            // El agentId ya pertenece a otro usuario
+            return res.status(403).json({
+                success: false,
+                error: 'Este agente ya está asociado a otro usuario'
+            });
+        }
+
+        // Generar tokens para el usuario
+        const { accessToken, refreshToken } = generateTokens(user);
+
+        // Guardar refresh token
+        user.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
+        // Limpiar antiguos
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        user.refreshTokens = user.refreshTokens.filter(t => t.createdAt > sevenDaysAgo);
+        user.lastLogin = new Date();
+        await user.save();
+
+        return res.json({
+            success: true,
+            data: {
+                user: {
+                    id: user._id,
+                    username: user.username,
+                    email: user.email,
+                    role: user.role
+                },
+                agent: {
+                    id: agent._id,
+                    agentId: agent.agentId,
+                    name: agent.name,
+                    user: agent.user
+                },
+                tokens: {
+                    accessToken,
+                    refreshToken,
+                    expiresIn: process.env.JWT_EXPIRES_IN || '15m'
+                }
+            }
+        });
+    } catch (error) {
+        console.error('Error en login de agente:', error);
+        return res.status(500).json({ success: false, error: 'Error interno del servidor' });
+    }
+});
+
 // POST /auth/register
 router.post('/register', registerLimiter, async (req, res) => {
     try {
