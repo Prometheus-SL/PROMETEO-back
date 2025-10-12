@@ -58,7 +58,7 @@ const requireAgentOwnership = async (req, res, next) => {
         }
 
         // Buscar agente que pertenezca al usuario
-    const agent = await Agent.findOne({ agentId, user: req.user._id });
+        const agent = await Agent.findOne({ agentId, user: req.user._id });
         if (!agent) {
             return res.status(403).json({ success: false, error: 'El agente no pertenece al usuario autenticado' });
         }

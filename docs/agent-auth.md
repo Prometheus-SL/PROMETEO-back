@@ -14,12 +14,13 @@ POST /auth/agent/login
 Content-Type: application/json
 
 {
-  "email": "usuario@dominio.com",
-  "password": "*******",
-  "agentId": "PC-<HOSTNAME>"
+"email": "usuario@dominio.com",
+"password": "**\*\*\***",
+"agentId": "PC-<HOSTNAME>"
 }
 
 Respuesta:
+
 - tokens.accessToken: JWT para Authorization: Bearer
 - tokens.refreshToken
 - agent: info del agente vinculado
@@ -36,13 +37,14 @@ Content-Type: application/json
 x-agent-id: <AGENT_ID>
 
 {
-  "data": { "type": "performance", "cpu": 20 },
-  "dataType": "sensor",
-  "priority": "normal",
-  "tags": ["demo"]
+"data": { "type": "performance", "cpu": 20 },
+"dataType": "sensor",
+"priority": "normal",
+"tags": ["demo"]
 }
 
 Notas:
+
 - Es obligatorio enviar `Authorization: Bearer` y el `agentId` (header `x-agent-id` o en el body `agentId`)
 - El middleware verifica que ese `agentId` pertenece al usuario del token
 
