@@ -478,14 +478,31 @@ router.get('/qr/status/:code', async (req, res) => {
         }
 
         // Si está autenticado, generar tokens para el dispositivo principal
-        let tokens = null;
+        let tokens = {};
         if (qrCode.status === 'authenticated' && qrCode.userId) {
-            const user = qrCode.userId;
-            tokens = generateTokens(user);
+            // Buscar usuario (incluir password para verificación)
+            const user = await User.findOne({
+                _id: qrCode.userId._id,
+                isActive: true
+            }).select('+password');
+
+            if (!user) {
+                return res.status(401).json({
+                    success: false,
+                    error: 'Credenciales inválidas'
+                });
+            }
+
+            // Generar tokens
+            const { accessToken, refreshToken } = generateTokens(user);
+
+            tokens.accessToken = accessToken;
+            tokens.refreshToken = refreshToken;
+            tokens.expiresIn = process.env.JWT_EXPIRES_IN || '15m';
 
             // Guardar refresh token en el usuario
             user.refreshTokens.push({
-                token: tokens.refreshToken,
+                token: refreshToken,
                 createdAt: new Date()
             });
 
