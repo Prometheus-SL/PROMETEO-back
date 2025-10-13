@@ -177,7 +177,6 @@ io.on('connection', (socket) => {
     // Evento para recibir datos del agente
     socket.on('agent-data', async (data) => {
         try {
-            console.log('Datos recibidos del agente:', data);
 
             const agentInfo = agentState.connectedAgents.get(socket.id);
             const agentId = agentInfo?.agentId || socket.id;

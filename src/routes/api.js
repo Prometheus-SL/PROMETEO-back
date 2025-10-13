@@ -114,7 +114,7 @@ router.get('/stats', authenticateToken, authorizeRole('admin', 'operator'), asyn
 // Ruta para enviar comando a agentes (POST) - solo admin/operator
 router.post('/agents/command', authenticateToken, authorizeRole('admin', 'operator'), (req, res) => {
     const io = req.app.get('io');
-    const { command, data, agentId } = req.body;
+    const { command, args, agentId } = req.body;
 
     if (!command) {
         return res.status(400).json({
@@ -124,8 +124,8 @@ router.post('/agents/command', authenticateToken, authorizeRole('admin', 'operat
     }
 
     const commandData = {
-        command,
-        data,
+        command_type: command,
+        parameters: args,
         timestamp: new Date().toISOString(),
         sentBy: req.user.username
     };
