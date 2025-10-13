@@ -205,6 +205,25 @@ Las variables de entorno disponibles:
 - `PORT` - Puerto del servidor (default: 3000)
 - `CLIENT_URL` - URL del cliente para CORS (default: http://localhost:3001)
 - `NODE_ENV` - Entorno de ejecución (development/production)
+- `CORS_ORIGINS` - Lista de orígenes permitidos separada por comas. Puede incluir regex con la forma `/.../`.
+- `CORS_CREDENTIALS` - `true` o `false` para habilitar el envío de credenciales (cookies, auth headers). Default: `false`.
+
+### Ejemplos de CORS en producción
+
+Permitir el frontend en producción y localhost:
+
+```
+CORS_ORIGINS=https://prometeo.miguelprez.es,http://localhost:3001
+CORS_CREDENTIALS=true
+```
+
+Permitir subdominios mediante regex:
+
+```
+CORS_ORIGINS=/^https?:\/\/([a-z0-9-]+\.)*miguelprez\.es$/
+```
+
+Si ves en logs un mensaje como `[CORS] Origen bloqueado: ...`, revisa que el esquema (http/https), dominio y puerto del origen del navegador estén exactamente incluidos o coincidan con el patrón.
 
 ## 🔧 Desarrollo
 
