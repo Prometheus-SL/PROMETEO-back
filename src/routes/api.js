@@ -22,9 +22,10 @@ router.get('/agents', authenticateToken, authorizeRole('admin', 'operator'), asy
             ];
         }
 
-        // Obtener agentes de la base de datos
+        // Obtener agentes de la base de datos con información del usuario propietario
         const agents = await Agent.find(query)
             .select('-apiKey') // No incluir API keys por seguridad
+            .populate('user', 'username email name surname')
             .limit(limit * 1)
             .skip((page - 1) * limit)
             .sort({ lastSeen: -1 });
@@ -168,14 +169,22 @@ router.get('/data/latest', authenticateToken, async (req, res) => {
 
         const latestData = await AgentData.find(query)
             .sort({ createdAt: -1 })
-            .limit(limit * 1)
-            .populate('agentId', 'name agentId location');
+            .limit(limit * 1);
+
+        // Si se necesita información del agente, obtenerla por separado
+        const enrichedData = await Promise.all(latestData.map(async (data) => {
+            const agent = await Agent.findOne({ agentId: data.agentId }).select('name agentId location');
+            return {
+                ...data.toObject(),
+                agent: agent ? { name: agent.name, agentId: agent.agentId, location: agent.location } : null
+            };
+        }));
 
         res.json({
             success: true,
             data: {
-                latest: latestData,
-                count: latestData.length,
+                latest: enrichedData,
+                count: enrichedData.length,
                 timestamp: new Date().toISOString()
             }
         });
@@ -392,7 +401,7 @@ router.patch('/agents/:agentId', authenticateToken, authorizeRole('admin', 'oper
             { agentId },
             actualUpdates,
             { new: true, runValidators: true }
-        ).select('-apiKey');
+        ).select('-apiKey').populate('user', 'username email name surname');
 
         if (!agent) {
             return res.status(404).json({
@@ -409,6 +418,147 @@ router.patch('/agents/:agentId', authenticateToken, authorizeRole('admin', 'oper
 
     } catch (error) {
         console.error('Error actualizando agente:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error interno del servidor'
+        });
+    }
+});
+
+// Ruta para obtener un agente específico por ID (solo admin/operator)
+router.get('/agents/:agentId', authenticateToken, authorizeRole('admin', 'operator'), async (req, res) => {
+    try {
+        const { agentId } = req.params;
+
+        const agent = await Agent.findOne({ agentId })
+            .select('-apiKey')
+            .populate('user', 'username email name surname');
+
+        if (!agent) {
+            return res.status(404).json({
+                success: false,
+                error: 'Agente no encontrado'
+            });
+        }
+
+        // Obtener últimos datos del agente
+        const latestData = await AgentData.find({ agentId })
+            .sort({ createdAt: -1 })
+            .limit(5);
+
+        res.json({
+            success: true,
+            data: {
+                agent,
+                latestData,
+                isOnline: agent.isOnline
+            }
+        });
+
+    } catch (error) {
+        console.error('Error obteniendo agente:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error interno del servidor'
+        });
+    }
+});
+
+// Ruta para eliminar un agente (solo admin)
+router.delete('/agents/:agentId', authenticateToken, authorizeRole('admin'), async (req, res) => {
+    try {
+        const { agentId } = req.params;
+
+        const agent = await Agent.findOneAndDelete({ agentId });
+
+        if (!agent) {
+            return res.status(404).json({
+                success: false,
+                error: 'Agente no encontrado'
+            });
+        }
+
+        // Opcionalmente, eliminar también los datos del agente
+        // await AgentData.deleteMany({ agentId });
+
+        res.json({
+            success: true,
+            message: 'Agente eliminado exitosamente'
+        });
+
+    } catch (error) {
+        console.error('Error eliminando agente:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error interno del servidor'
+        });
+    }
+});
+
+// Ruta para obtener estadísticas de un agente específico (solo admin/operator)
+router.get('/agents/:agentId/stats', authenticateToken, authorizeRole('admin', 'operator'), async (req, res) => {
+    try {
+        const { agentId } = req.params;
+        const { days = 7 } = req.query;
+
+        // Verificar que el agente existe
+        const agent = await Agent.findOne({ agentId }).select('name agentId status isOnline lastSeen');
+        if (!agent) {
+            return res.status(404).json({
+                success: false,
+                error: 'Agente no encontrado'
+            });
+        }
+
+        const startDate = new Date(Date.now() - (days * 24 * 60 * 60 * 1000));
+
+        const [totalData, dataByType, recentActivity] = await Promise.all([
+            // Total de datos enviados
+            AgentData.countDocuments({ 
+                agentId, 
+                createdAt: { $gte: startDate } 
+            }),
+            
+            // Datos por tipo
+            AgentData.aggregate([
+                { $match: { agentId, createdAt: { $gte: startDate } } },
+                { $group: { _id: '$dataType', count: { $sum: 1 } } },
+                { $sort: { count: -1 } }
+            ]),
+            
+            // Actividad reciente (datos por día)
+            AgentData.aggregate([
+                { $match: { agentId, createdAt: { $gte: startDate } } },
+                { 
+                    $group: { 
+                        _id: { 
+                            $dateToString: { 
+                                format: "%Y-%m-%d", 
+                                date: "$createdAt" 
+                            } 
+                        }, 
+                        count: { $sum: 1 } 
+                    } 
+                },
+                { $sort: { '_id': 1 } }
+            ])
+        ]);
+
+        res.json({
+            success: true,
+            data: {
+                agent,
+                stats: {
+                    totalData,
+                    dataByType,
+                    recentActivity,
+                    period: `${days} días`
+                }
+            }
+        });
+
+    } catch (error) {
+        console.error('Error obteniendo estadísticas del agente:', error);
         res.status(500).json({
             success: false,
             error: 'Error interno del servidor'

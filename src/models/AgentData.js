@@ -3,8 +3,7 @@ const mongoose = require('mongoose');
 const agentDataSchema = new mongoose.Schema({
     agentId: {
         type: String,
-        required: [true, 'Agent ID es requerido'],
-        ref: 'Agent'
+        required: [true, 'Agent ID es requerido']
     },
     data: {
         type: mongoose.Schema.Types.Mixed,
