@@ -16,7 +16,7 @@ const router = express.Router();
 // POST /control/command - Enviar comando a un agente específico
 router.post('/command', authenticateToken, authorizeRole('admin', 'operator'), async (req, res) => {
     try {
-        const { agentId, command, parameters = {}, priority = 'normal', scheduledFor } = req.body;
+        const { agentId, command, args = {}, priority = 'normal', scheduledFor } = req.body;
 
         if (!agentId || !command) {
             return res.status(400).json({
@@ -47,8 +47,8 @@ router.post('/command', authenticateToken, authorizeRole('admin', 'operator'), a
             commandId: uuidv4(),
             agentId,
             sentBy: req.user.username,
-            command,
-            parameters,
+            command_type: command,
+            parameters: args,
             scheduledFor: scheduledFor ? new Date(scheduledFor) : new Date()
         });
 
