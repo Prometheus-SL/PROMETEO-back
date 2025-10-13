@@ -1,3 +1,0 @@
-[phases.setup]
-nixPkgs = ["nodejs_22"]
-nodejs.version = "22.19.0"
