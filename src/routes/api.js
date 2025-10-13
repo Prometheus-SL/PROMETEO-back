@@ -75,7 +75,7 @@ router.get('/stats', authenticateToken, authorizeRole('admin', 'operator'), asyn
         // Estadísticas de la base de datos
         const [totalAgents, activeAgents, totalUsers, totalData] = await Promise.all([
             Agent.countDocuments(),
-            Agent.countDocuments({ isOnline: true }),
+            Agent.countDocuments({ status: 'online' }),
             User.countDocuments({ isActive: true }),
             AgentData.countDocuments()
         ]);
@@ -451,7 +451,7 @@ router.get('/agents/:agentId', authenticateToken, authorizeRole('admin', 'operat
             data: {
                 agent,
                 latestData,
-                isOnline: agent.isOnline
+                status: agent.status
             }
         });
 
@@ -502,7 +502,7 @@ router.get('/agents/:agentId/stats', authenticateToken, authorizeRole('admin', '
         const { days = 7 } = req.query;
 
         // Verificar que el agente existe
-        const agent = await Agent.findOne({ agentId }).select('name agentId status isOnline lastSeen');
+        const agent = await Agent.findOne({ agentId }).select('name agentId status lastSeen');
         if (!agent) {
             return res.status(404).json({
                 success: false,

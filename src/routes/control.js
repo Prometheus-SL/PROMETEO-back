@@ -35,7 +35,7 @@ router.post('/command', authenticateToken, authorizeRole('admin', 'operator'), a
         }
 
         // Verificar que el agente esté online para comandos inmediatos
-        if (!scheduledFor && !agent.isOnline) {
+        if (!scheduledFor && agent.status !== 'online') {
             return res.status(400).json({
                 success: false,
                 error: 'El agente debe estar online para enviar comandos inmediatos'
@@ -56,7 +56,7 @@ router.post('/command', authenticateToken, authorizeRole('admin', 'operator'), a
 
         // Si el agente está online, enviar via WebSocket
         const io = req.app.get('io');
-        if (agent.isOnline && !scheduledFor) {
+        if (agent.status === 'online' && !scheduledFor) {
             const targetSocket = Array.from(io.of('/').sockets.values())
                 .find(socket => socket.agentId === agentId);
 
@@ -131,7 +131,7 @@ router.post('/commands/batch', authenticateToken, authorizeRole('admin', 'operat
                 await newCommand.save();
 
                 // Enviar via WebSocket si está online
-                if (agent.isOnline) {
+                if (agent.status === 'online') {
                     const targetSocket = Array.from(io.of('/').sockets.values())
                         .find(socket => socket.agentId === agentId);
 

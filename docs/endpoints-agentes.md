@@ -165,7 +165,6 @@ Todos los endpoints requieren autenticación JWT (`Authorization: Bearer <token>
   "name": "Mi PC",
   "description": "Descripción",
   "status": "online",
-  "isOnline": true,
   "lastSeen": "2025-10-13T17:23:12.000Z",
   "user": {
     "username": "admin",

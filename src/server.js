@@ -140,7 +140,7 @@ io.on('connection', (socket) => {
                     { agentId: finalAgentId },
                     {
                         $set: {
-                            isOnline: true,
+                            status: "online",
                             lastSeen: new Date(),
                             'connectionInfo.socketId': socket.id,
                             'connectionInfo.ipAddress': socket.handshake.address,
@@ -294,6 +294,13 @@ io.on('connection', (socket) => {
                 agentId: agent.agentId,
                 disconnectedAt: new Date()
             });
+
+            // Actualizar estado en base de datos
+            Agent.findOneAndUpdate(
+                { agentId: agent.agentId },
+                { status: "offline", lastSeen: new Date() },
+                { upsert: false }
+            ).catch(err => console.error('Error actualizando estado de agente en BD:', err));
 
             console.log(`Agente desconectado: ${agent.agentId}`);
         }

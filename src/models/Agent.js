@@ -92,10 +92,6 @@ const agentSchema = new mongoose.Schema({
     lastData: {
         type: Date
     },
-    isOnline: {
-        type: Boolean,
-        default: false
-    },
     connectionInfo: {
         socketId: String,
         ipAddress: String,
@@ -109,16 +105,15 @@ const agentSchema = new mongoose.Schema({
 
 // Índices para optimizar búsquedas (agentId ya tiene índice por unique: true)
 agentSchema.index({ status: 1 });
-agentSchema.index({ isOnline: 1 });
 agentSchema.index({ lastSeen: -1 });
 agentSchema.index({ user: 1, agentId: 1 });
 
 // Método para actualizar estado de conexión
-agentSchema.methods.updateConnectionStatus = function (isOnline, connectionInfo = {}) {
-    this.isOnline = isOnline;
+agentSchema.methods.updateConnectionStatus = function (status, connectionInfo = {}) {
+    this.status = status;
     this.lastSeen = new Date();
 
-    if (isOnline) {
+    if (status === 'online') {
         this.connectionInfo = {
             ...this.connectionInfo,
             ...connectionInfo,
