@@ -1,6 +1,9 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+const QRCode = require('qrcode');
+const { v4: uuidv4 } = require('uuid');
 const User = require('../models/User');
+const QRCodeModel = require('../models/QRCode');
 const {
     authenticateToken,
     generateTokens,
@@ -419,6 +422,254 @@ router.get('/users', authenticateToken, async (req, res) => {
 
     } catch (error) {
         console.error('Error obteniendo usuarios:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error interno del servidor'
+        });
+    }
+});
+
+// POST /auth/qr/generate - Generar código QR para login
+router.post('/qr/generate', async (req, res) => {
+    try {
+        const code = uuidv4();
+        const deviceInfo = {
+            userAgent: req.get('User-Agent'),
+            ip: req.ip || req.connection.remoteAddress
+        };
+
+        // Crear registro en la base de datos
+        const qrCode = new QRCodeModel({
+            code,
+            deviceInfo
+        });
+
+        await qrCode.save();
+
+        res.json({
+            success: true,
+            data: {
+                code,
+                expiresAt: new Date(Date.now() + 5 * 60 * 1000) // 5 minutos
+            }
+        });
+
+    } catch (error) {
+        console.error('Error generando código QR:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error interno del servidor'
+        });
+    }
+});
+
+// GET /auth/qr/status/:code - Verificar estado del código QR
+router.get('/qr/status/:code', async (req, res) => {
+    try {
+        const { code } = req.params;
+
+        const qrCode = await QRCodeModel.findOne({ code }).populate('userId', '-password -refreshTokens');
+
+        if (!qrCode) {
+            return res.status(404).json({
+                success: false,
+                error: 'Código QR no encontrado o expirado'
+            });
+        }
+
+        // Si está autenticado, generar tokens para el dispositivo principal
+        let tokens = null;
+        if (qrCode.status === 'authenticated' && qrCode.userId) {
+            const user = qrCode.userId;
+            tokens = generateTokens(user);
+
+            // Guardar refresh token en el usuario
+            user.refreshTokens.push({
+                token: tokens.refreshToken,
+                createdAt: new Date()
+            });
+
+            // Limpiar tokens antiguos
+            const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+            user.refreshTokens = user.refreshTokens.filter(
+                tokenObj => tokenObj.createdAt > sevenDaysAgo
+            );
+
+            await user.save();
+        }
+
+        res.json({
+            success: true,
+            data: {
+                status: qrCode.status,
+                scannedAt: qrCode.scannedAt,
+                authenticatedAt: qrCode.authenticatedAt,
+                user: qrCode.userId ? {
+                    id: qrCode.userId._id,
+                    username: qrCode.userId.username,
+                    email: qrCode.userId.email,
+                    role: qrCode.userId.role,
+                    name: qrCode.userId.name,
+                    surname: qrCode.userId.surname,
+                    birthday: qrCode.userId.birthday,
+                    lastLogin: qrCode.userId.lastLogin
+                } : null,
+                tokens: tokens
+            }
+        });
+
+    } catch (error) {
+        console.error('Error verificando estado del QR:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error interno del servidor'
+        });
+    }
+});
+
+// POST /auth/qr/scan - Marcar código QR como escaneado
+router.post('/qr/scan', async (req, res) => {
+    try {
+        const { code } = req.body;
+
+        if (!code) {
+            return res.status(400).json({
+                success: false,
+                error: 'Código QR requerido'
+            });
+        }
+
+        const qrCode = await QRCodeModel.findOne({ code });
+
+        if (!qrCode) {
+            return res.status(404).json({
+                success: false,
+                error: 'Código QR no encontrado o expirado'
+            });
+        }
+
+        if (qrCode.status !== 'pending') {
+            return res.status(400).json({
+                success: false,
+                error: 'Código QR ya ha sido utilizado'
+            });
+        }
+
+        // Marcar como escaneado
+        qrCode.status = 'scanned';
+        qrCode.scannedAt = new Date();
+        await qrCode.save();
+
+        res.json({
+            success: true,
+            message: 'Código QR escaneado correctamente'
+        });
+
+    } catch (error) {
+        console.error('Error escaneando QR:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error interno del servidor'
+        });
+    }
+});
+
+// POST /auth/qr/authenticate - Autenticar usando código QR
+router.post('/qr/authenticate', async (req, res) => {
+    try {
+        const { code, username, password } = req.body;
+
+        if (!code || !username || !password) {
+            return res.status(400).json({
+                success: false,
+                error: 'Código QR, usuario y contraseña son requeridos'
+            });
+        }
+
+        const qrCode = await QRCodeModel.findOne({ code });
+
+        if (!qrCode) {
+            return res.status(404).json({
+                success: false,
+                error: 'Código QR no encontrado o expirado'
+            });
+        }
+
+        if (qrCode.status !== 'scanned') {
+            return res.status(400).json({
+                success: false,
+                error: 'Código QR no ha sido escaneado o ya ha sido utilizado'
+            });
+        }
+
+        // Buscar y verificar usuario
+        const user = await User.findOne({
+            $or: [{ username }, { email: username }],
+            isActive: true
+        }).select('+password');
+
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                error: 'Credenciales inválidas'
+            });
+        }
+
+        // Verificar contraseña
+        const isValidPassword = await user.matchPassword(password);
+        if (!isValidPassword) {
+            return res.status(401).json({
+                success: false,
+                error: 'Credenciales inválidas'
+            });
+        }
+
+        // Generar tokens
+        const { accessToken, refreshToken } = generateTokens(user);
+
+        // Guardar refresh token
+        user.refreshTokens.push({
+            token: refreshToken,
+            createdAt: new Date()
+        });
+
+        // Limpiar tokens antiguos
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        user.refreshTokens = user.refreshTokens.filter(
+            tokenObj => tokenObj.createdAt > sevenDaysAgo
+        );
+
+        user.lastLogin = new Date();
+        await user.save();
+
+        // Marcar QR como autenticado
+        qrCode.status = 'authenticated';
+        qrCode.userId = user._id;
+        qrCode.authenticatedAt = new Date();
+        await qrCode.save();
+
+        res.json({
+            success: true,
+            data: {
+                user: {
+                    id: user._id,
+                    username: user.username,
+                    email: user.email,
+                    role: user.role,
+                    lastLogin: user.lastLogin,
+                    name: user.name,
+                    surname: user.surname,
+                    birthday: user.birthday
+                },
+                tokens: {
+                    accessToken,
+                    refreshToken
+                }
+            }
+        });
+
+    } catch (error) {
+        console.error('Error autenticando con QR:', error);
         res.status(500).json({
             success: false,
             error: 'Error interno del servidor'
