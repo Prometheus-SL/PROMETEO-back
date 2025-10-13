@@ -51,20 +51,20 @@ const isOriginAllowed = (origin) => {
     });
 };
 
-    const corsOptions = {
-        origin: (origin, callback) => {
-            const allowed = isOriginAllowed(origin);
-            if (!allowed) {
-                // Log mínimo para diagnosticar orígenes bloqueados en producción
-                console.warn(`[CORS] Origen bloqueado: ${origin || 'sin-origin'} | permitidos: ${allowedOrigins.join(', ')}`);
-            }
-            callback(null, allowed);
-        },
+const corsOptions = {
+    origin: (origin, callback) => {
+        const allowed = isOriginAllowed(origin);
+        if (!allowed) {
+            // Log mínimo para diagnosticar orígenes bloqueados en producción
+            console.warn(`[CORS] Origen bloqueado: ${origin || 'sin-origin'} | permitidos: ${allowedOrigins.join(', ')}`);
+        }
+        callback(null, allowed);
+    },
     credentials: allowCredentials,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     // allowedHeaders undefined => se reflejan los enviados en Access-Control-Request-Headers
-        optionsSuccessStatus: 204,
-        preflightContinue: false
+    optionsSuccessStatus: 204,
+    preflightContinue: false
 };
 
 // Middleware de CORS (colocado pronto para que el preflight no lo bloquee nada)
