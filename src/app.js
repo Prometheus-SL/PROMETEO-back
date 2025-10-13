@@ -52,14 +52,7 @@ const isOriginAllowed = (origin) => {
 };
 
 const corsOptions = {
-    origin: (origin, callback) => {
-        const allowed = isOriginAllowed(origin);
-        if (!allowed) {
-            // Log mínimo para diagnosticar orígenes bloqueados en producción
-            console.warn(`[CORS] Origen bloqueado: ${origin || 'sin-origin'} | permitidos: ${allowedOrigins.join(', ')}`);
-        }
-        callback(null, allowed);
-    },
+    origin: (origin, callback) => callback(null, isOriginAllowed(origin)),
     credentials: allowCredentials,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     // allowedHeaders undefined => se reflejan los enviados en Access-Control-Request-Headers
