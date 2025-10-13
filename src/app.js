@@ -57,7 +57,7 @@ const corsOptions = {
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     // allowedHeaders undefined => se reflejan los enviados en Access-Control-Request-Headers
     optionsSuccessStatus: 204,
-    preflightContinue: false
+    preflightContinue: true
 };
 
 // Middleware de CORS (colocado pronto para que el preflight no lo bloquee nada)

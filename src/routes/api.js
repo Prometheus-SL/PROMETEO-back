@@ -514,31 +514,31 @@ router.get('/agents/:agentId/stats', authenticateToken, authorizeRole('admin', '
 
         const [totalData, dataByType, recentActivity] = await Promise.all([
             // Total de datos enviados
-            AgentData.countDocuments({ 
-                agentId, 
-                createdAt: { $gte: startDate } 
+            AgentData.countDocuments({
+                agentId,
+                createdAt: { $gte: startDate }
             }),
-            
+
             // Datos por tipo
             AgentData.aggregate([
                 { $match: { agentId, createdAt: { $gte: startDate } } },
                 { $group: { _id: '$dataType', count: { $sum: 1 } } },
                 { $sort: { count: -1 } }
             ]),
-            
+
             // Actividad reciente (datos por día)
             AgentData.aggregate([
                 { $match: { agentId, createdAt: { $gte: startDate } } },
-                { 
-                    $group: { 
-                        _id: { 
-                            $dateToString: { 
-                                format: "%Y-%m-%d", 
-                                date: "$createdAt" 
-                            } 
-                        }, 
-                        count: { $sum: 1 } 
-                    } 
+                {
+                    $group: {
+                        _id: {
+                            $dateToString: {
+                                format: "%Y-%m-%d",
+                                date: "$createdAt"
+                            }
+                        },
+                        count: { $sum: 1 }
+                    }
                 },
                 { $sort: { '_id': 1 } }
             ])
