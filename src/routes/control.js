@@ -47,7 +47,7 @@ router.post('/command', authenticateToken, authorizeRole('admin', 'operator'), a
             commandId: uuidv4(),
             agentId,
             sentBy: req.user.username,
-            command_type: command,
+            command,
             parameters: args,
             scheduledFor: scheduledFor ? new Date(scheduledFor) : new Date()
         });
@@ -63,8 +63,8 @@ router.post('/command', authenticateToken, authorizeRole('admin', 'operator'), a
             if (targetSocket) {
                 targetSocket.emit('command', {
                     commandId: newCommand.commandId,
-                    command,
-                    parameters,
+                    command_type: command,
+                    parameters: args,
                     sentBy: req.user.username,
                     timestamp: new Date().toISOString()
                 });
