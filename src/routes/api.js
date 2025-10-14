@@ -159,6 +159,31 @@ router.post('/agents/command', authenticateToken, authorizeRole('admin', 'operat
     }
 });
 
+router.get('/agents/:userId', authenticateToken, async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const agents = await Agent.find({ user: userId })
+            .select('-apiKey')
+            .populate('user', 'username email name surname');
+        if (!agents || agents.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'No se encontraron agentes para este usuario'
+            });
+        }
+        res.json({
+            success: true,
+            data: agents
+        });
+    } catch (error) {
+        console.error('Error obteniendo agente por usuario:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error interno del servidor'
+        });
+    }
+});
+
 // Ruta para obtener el último dato recibido
 router.get('/data/latest', authenticateToken, async (req, res) => {
     try {
