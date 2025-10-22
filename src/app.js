@@ -6,7 +6,6 @@ const compression = require('compression');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
 // Si estamos detrás de un proxy (Traefik/Nginx), habilitar trust proxy si se indica
 if (process.env.TRUST_PROXY === 'true') {

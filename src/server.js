@@ -28,26 +28,6 @@ const allowCredentials = String(process.env.CORS_CREDENTIALS).toLowerCase() === 
 const io = new Server(server, {
     pingTimeout: 60000,
     pingInterval: 25000,
-    cors: {
-        origin: (origin, callback) => {
-            // Reutilizamos la misma lógica que Express
-            if (!origin) return callback(null, true);
-            if (allowedOrigins.includes(origin)) return callback(null, true);
-            // Soporta regex del .env como /.../
-            const ok = allowedOrigins.some(o => {
-                if (o.startsWith('/') && o.endsWith('/')) {
-                    try { return new RegExp(o.slice(1, -1)).test(origin); } catch (_) { return false; }
-                }
-                return false;
-            });
-            if (!ok) {
-                console.warn(`[Socket.io CORS] Origen bloqueado: ${origin} | permitidos: ${allowedOrigins.join(', ')}`);
-            }
-            callback(null, ok);
-        },
-        credentials: allowCredentials,
-        methods: ['GET', 'POST'],
-    }
 });
 
 // Estado global para manejar información de agentes
