@@ -53,8 +53,7 @@ const userSchema = new mongoose.Schema({
         token: String,
         createdAt: {
             type: Date,
-            default: Date.now,
-            expires: 604800 // 7 días
+            default: Date.now
         }
     }]
 }, {
@@ -78,6 +77,15 @@ userSchema.pre('save', async function (next) {
 // Método para comparar passwords
 userSchema.methods.matchPassword = async function (enteredPassword) {
     return await bcrypt.compare(enteredPassword, this.password);
+};
+
+// Método para limpiar tokens expirados (7 días)
+userSchema.methods.cleanExpiredTokens = function () {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    this.refreshTokens = this.refreshTokens.filter(
+        rt => rt.createdAt > sevenDaysAgo
+    );
+    return this;
 };
 
 // Método para obtener usuario sin datos sensibles
