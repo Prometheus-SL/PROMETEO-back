@@ -7,14 +7,14 @@ const connectDB = async () => {
 
         console.log(`📊 MongoDB conectado: ${conn.connection.host}`);
 
-        // Eliminamos índice TTL heredado que borraba usuarios por refreshTokens.createdAt
+        // Eliminamos índices TTL heredados que borraban usuarios (p. ej. refreshTokens.createdAt)
         try {
             const collection = mongoose.connection.db.collection('users');
             const indexes = await collection.indexes();
-            const ttlIndex = indexes.find(idx => idx.name === 'refreshTokens.createdAt_1');
-            if (ttlIndex) {
-                await collection.dropIndex(ttlIndex.name);
-                console.log('🧹 Índice TTL refreshTokens.createdAt eliminado');
+            const ttlIndexes = indexes.filter(idx => typeof idx.expireAfterSeconds === 'number');
+            if (ttlIndexes.length > 0) {
+                await Promise.all(ttlIndexes.map(idx => collection.dropIndex(idx.name)));
+                console.log(`🧹 Índices TTL de usuarios eliminados: ${ttlIndexes.map(idx => idx.name).join(', ')}`);
             }
         } catch (cleanupErr) {
             console.warn('No se pudo revisar/eliminar índice TTL de usuarios:', cleanupErr.message);

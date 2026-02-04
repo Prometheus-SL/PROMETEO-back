@@ -14,7 +14,7 @@ const router = express.Router();
 
 // Rate limiting para login
 const loginLimiter = rateLimit({
-    // 15 minutos
+    windowMs: 15 * 60 * 1000, // 15 minutos
     max: process.env.NODE_ENV === 'development' ? 10000000 : 5, // ilimitado en local (development), 5 en producción
     message: {
         success: false,
