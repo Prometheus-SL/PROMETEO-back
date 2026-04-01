@@ -58,11 +58,10 @@ function slugify(text) {
 }
 
 // Asegurar slug antes de validar
-DashboardPageSchema.pre('validate', function (next) {
+DashboardPageSchema.pre('validate', function () {
     if (!this.slug && this.name) {
         this.slug = slugify(this.name);
     }
-    next();
 });
 
 module.exports = mongoose.model('DashboardPage', DashboardPageSchema);
