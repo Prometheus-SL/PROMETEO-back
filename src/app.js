@@ -61,7 +61,7 @@ const corsOptions = {
 
 // Middleware de CORS (colocado pronto para que el preflight no lo bloquee nada)
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
+app.options('/{*any}', cors(corsOptions));
 
 // Middleware para parsear JSON
 app.use(express.json());
@@ -113,3 +113,6 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 module.exports = app;
+
+
+
