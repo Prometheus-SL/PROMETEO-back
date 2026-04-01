@@ -56,6 +56,11 @@ const commandSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.Mixed,
         default: {}
     },
+    priority: {
+        type: String,
+        enum: ['low', 'normal', 'high', 'urgent'],
+        default: 'normal'
+    },
     status: {
         type: String,
         enum: ['pending', 'sent', 'received', 'executing', 'completed', 'failed', 'timeout'],
@@ -70,6 +75,10 @@ const commandSchema = new mongoose.Schema({
         data: mongoose.Schema.Types.Mixed,
         error: String,
         executionTime: Number // milisegundos
+    },
+    scheduledFor: {
+        type: Date,
+        default: Date.now
     },
     timeout: {
         type: Number,
@@ -116,6 +125,7 @@ commandSchema.methods.markAsReceived = function () {
 // Método para marcar comando como completado
 commandSchema.methods.markAsCompleted = function (response) {
     this.status = response.success ? 'completed' : 'failed';
+    this.executedAt = this.executedAt || new Date();
     this.completedAt = new Date();
     this.response = response;
     return this.save();

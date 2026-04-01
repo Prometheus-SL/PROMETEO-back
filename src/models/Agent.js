@@ -28,6 +28,10 @@ const agentSchema = new mongoose.Schema({
         required: [true, 'API Key es requerida'],
         unique: true
     },
+    isActive: {
+        type: Boolean,
+        default: true
+    },
     status: {
         type: String,
         enum: ['online', 'offline', 'maintenance', 'error', 'locked'],
@@ -115,16 +119,16 @@ agentSchema.methods.updateConnectionStatus = function (status, connectionInfo = 
 
     if (status === 'online') {
         this.connectionInfo = {
-            ...this.connectionInfo,
+            ...(this.connectionInfo || {}),
             ...connectionInfo,
             connectedAt: new Date()
         };
-        if (this.status === 'inactive') {
-            this.status = 'active';
-        }
     } else {
-        this.connectionInfo.disconnectedAt = new Date();
-        this.connectionInfo.socketId = null;
+        this.connectionInfo = {
+            ...(this.connectionInfo || {}),
+            disconnectedAt: new Date(),
+            socketId: null
+        };
     }
 
     return this.save();

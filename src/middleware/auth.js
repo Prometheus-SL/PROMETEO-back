@@ -1,44 +1,126 @@
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Agent = require('../models/Agent');
 
+function createAuthError(status, message) {
+    const error = new Error(message);
+    error.status = status;
+    return error;
+}
+
+function extractBearerToken(req) {
+    const authHeader = req.headers?.authorization || req.headers?.Authorization;
+    if (!authHeader || typeof authHeader !== 'string') {
+        return null;
+    }
+
+    const [scheme, token] = authHeader.split(' ');
+    if (scheme !== 'Bearer' || !token) {
+        return null;
+    }
+
+    return token;
+}
+
+function decodeJwt(token, secret, invalidMessage) {
+    try {
+        return jwt.verify(token, secret, { ignoreExpiration: true });
+    } catch (_error) {
+        throw createAuthError(403, invalidMessage);
+    }
+}
+
+function wasTokenInvalidated(decoded, user) {
+    if (!user?.tokenInvalidBefore || !decoded?.iat) {
+        return false;
+    }
+
+    return (decoded.iat * 1000) < user.tokenInvalidBefore.getTime();
+}
+
+async function loadActiveUser(userId) {
+    const user = await User.findById(userId);
+    if (!user || !user.isActive) {
+        throw createAuthError(401, 'Usuario no encontrado o inactivo');
+    }
+
+    return user;
+}
+
+async function verifyAccessToken(token) {
+    if (!token) {
+        throw createAuthError(401, 'Token de acceso requerido');
+    }
+
+    const decoded = decodeJwt(token, process.env.JWT_SECRET, 'Token inválido');
+    if (decoded?.type && decoded.type !== 'access') {
+        throw createAuthError(403, 'Token inválido');
+    }
+
+    const user = await loadActiveUser(decoded.id);
+
+    if (wasTokenInvalidated(decoded, user)) {
+        throw createAuthError(401, 'La sesión fue cerrada. Inicia sesión de nuevo');
+    }
+
+    if (decoded.sessionId && !user.hasSession(decoded.sessionId)) {
+        throw createAuthError(401, 'La sesión ya no está activa');
+    }
+
+    return {
+        user,
+        decoded,
+        sessionId: decoded.sessionId || null,
+        token,
+    };
+}
+
+async function verifyRefreshTokenValue(refreshToken) {
+    if (!refreshToken) {
+        throw createAuthError(401, 'Refresh token requerido');
+    }
+
+    const decoded = decodeJwt(refreshToken, process.env.JWT_REFRESH_SECRET, 'Refresh token inválido');
+    if (decoded?.type && decoded.type !== 'refresh') {
+        throw createAuthError(403, 'Refresh token inválido');
+    }
+
+    const user = await loadActiveUser(decoded.id);
+
+    if (wasTokenInvalidated(decoded, user)) {
+        throw createAuthError(401, 'La sesión fue cerrada. Inicia sesión de nuevo');
+    }
+
+    const isKnownToken = decoded.sessionId
+        ? user.hasRefreshToken(refreshToken, decoded.sessionId)
+        : user.hasRefreshToken(refreshToken);
+
+    if (!isKnownToken) {
+        throw createAuthError(403, 'Refresh token inválido');
+    }
+
+    return {
+        user,
+        decoded,
+        sessionId: decoded.sessionId || null,
+        token: refreshToken,
+    };
+}
+
 // Middleware para verificar JWT
 const authenticateToken = async (req, res, next) => {
     try {
-        const authHeader = req.headers['authorization'];
-        const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+        const token = extractBearerToken(req);
+        const auth = await verifyAccessToken(token);
 
-        if (!token) {
-            return res.status(401).json({
-                success: false,
-                error: 'Token de acceso requerido'
-            });
-        }
-
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-        // Verificar que el usuario existe y está activo
-        const user = await User.findById(decoded.id);
-        if (!user || !user.isActive) {
-            return res.status(401).json({
-                success: false,
-                error: 'Usuario no encontrado o inactivo'
-            });
-        }
-
-        req.user = user;
+        req.user = auth.user;
+        req.auth = auth;
         next();
     } catch (error) {
-        if (error.name === 'TokenExpiredError') {
-            return res.status(401).json({
-                success: false,
-                error: 'Token expirado'
-            });
-        }
-
-        return res.status(403).json({
+        return res.status(error.status || 403).json({
             success: false,
-            error: 'Token inválido'
+            error: error.message || 'Token inválido'
         });
     }
 };
@@ -46,26 +128,21 @@ const authenticateToken = async (req, res, next) => {
 // Middleware para verificar que un agentId pertenece al usuario autenticado
 const requireAgentOwnership = async (req, res, next) => {
     try {
-        // Requiere que el usuario ya esté autenticado
         if (!req.user) {
             return res.status(401).json({ success: false, error: 'Usuario no autenticado' });
         }
 
-        // Obtener agentId desde headers, body o params
         const agentId = req.headers['x-agent-id'] || req.body.agentId || req.params.agentId;
         if (!agentId) {
             return res.status(400).json({ success: false, error: 'agentId es requerido' });
         }
 
-        // Buscar agente que pertenezca al usuario
         const agent = await Agent.findOne({ agentId, user: req.user._id });
         if (!agent) {
             return res.status(403).json({ success: false, error: 'El agente no pertenece al usuario autenticado' });
         }
 
-        // Adjuntar agente a la request para uso en el handler
         req.agent = agent;
-        // Asegurarnos que body.agentId coincide con el del agente
         if (req.body && req.body.agentId && req.body.agentId !== agent.agentId) {
             return res.status(403).json({ success: false, error: 'agentId no coincide con el agente del usuario' });
         }
@@ -111,8 +188,7 @@ const authenticateAgent = async (req, res, next) => {
             });
         }
 
-        // Buscar agente por API Key
-        const agent = await Agent.findOne({ apiKey, isActive: true });
+        const agent = await Agent.findOne({ apiKey, isActive: { $ne: false } });
         if (!agent) {
             return res.status(403).json({
                 success: false,
@@ -120,7 +196,6 @@ const authenticateAgent = async (req, res, next) => {
             });
         }
 
-        // Verificar que el agentId coincida si se proporciona
         if (agentId && agent.agentId !== agentId) {
             return res.status(403).json({
                 success: false,
@@ -128,7 +203,6 @@ const authenticateAgent = async (req, res, next) => {
             });
         }
 
-        // Actualizar última actividad
         agent.lastSeen = new Date();
         await agent.save();
 
@@ -144,94 +218,63 @@ const authenticateAgent = async (req, res, next) => {
 };
 
 // Middleware para autenticación opcional (no falla si no hay token)
-const optionalAuth = async (req, res, next) => {
+const optionalAuth = async (req, _res, next) => {
     try {
-        const authHeader = req.headers['authorization'];
-        const token = authHeader && authHeader.split(' ')[1];
-
-        if (token) {
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
-            const user = await User.findById(decoded.id);
-
-            if (user && user.isActive) {
-                req.user = user;
-            }
+        const token = extractBearerToken(req);
+        if (!token) {
+            return next();
         }
 
+        const auth = await verifyAccessToken(token);
+        req.user = auth.user;
+        req.auth = auth;
         next();
-    } catch (error) {
-        // Continuar sin autenticación si el token es inválido
+    } catch (_error) {
         next();
     }
 };
 
-// Utilidad para generar tokens JWT
-const generateTokens = (user) => {
+// Utilidad para generar tokens JWT sin caducidad automática.
+const generateTokens = (user, options = {}) => {
+    const sessionId = options.sessionId || crypto.randomUUID();
+
     const accessToken = jwt.sign(
         {
             id: user._id,
             username: user.username,
             email: user.email,
-            role: user.role
+            role: user.role,
+            sessionId,
+            type: 'access'
         },
-        process.env.JWT_SECRET,
-        {
-            expiresIn: process.env.JWT_EXPIRES_IN || '15m'
-        }
+        process.env.JWT_SECRET
     );
 
     const refreshToken = jwt.sign(
-        { id: user._id },
-        process.env.JWT_REFRESH_SECRET,
         {
-            expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d'
-        }
+            id: user._id,
+            sessionId,
+            type: 'refresh'
+        },
+        process.env.JWT_REFRESH_SECRET
     );
 
-    return { accessToken, refreshToken };
+    return { accessToken, refreshToken, sessionId, expiresIn: null };
 };
 
-// Middleware para verificar refresh token
 const verifyRefreshToken = async (req, res, next) => {
     try {
-        const { refreshToken } = req.body;
+        const refreshToken = req.body?.refreshToken;
+        const auth = await verifyRefreshTokenValue(refreshToken);
 
-        if (!refreshToken) {
-            return res.status(401).json({
-                success: false,
-                error: 'Refresh token requerido'
-            });
-        }
-
-        const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-        const user = await User.findById(decoded.id);
-
-        if (!user || !user.isActive) {
-            return res.status(401).json({
-                success: false,
-                error: 'Usuario no encontrado o inactivo'
-            });
-        }
-
-        // Verificar que el refresh token esté en la lista del usuario
-        const tokenExists = user.refreshTokens.some(
-            tokenObj => tokenObj.token === refreshToken
-        );
-
-        if (!tokenExists) {
-            return res.status(403).json({
-                success: false,
-                error: 'Refresh token inválido'
-            });
-        }
-
-        req.user = user;
+        req.user = auth.user;
         req.refreshToken = refreshToken;
+        req.auth = auth;
         next();
     } catch (error) {
-        return res.status(403).json({
+        return res.status(error.status || 403).json({
             success: false,
-            error: 'Refresh token inválido o expirado'
+            error: error.message || 'Refresh token inválido'
         });
     }
 };
@@ -243,5 +286,7 @@ module.exports = {
     requireAgentOwnership,
     optionalAuth,
     generateTokens,
-    verifyRefreshToken
+    verifyAccessToken,
+    verifyRefreshToken,
+    verifyRefreshTokenValue,
 };

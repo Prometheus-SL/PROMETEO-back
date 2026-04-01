@@ -21,10 +21,22 @@ const QRCodeSchema = new mongoose.Schema({
         userAgent: String,
         ip: String
     },
+    issuedSessionId: {
+        type: String,
+        default: null
+    },
+    issuedTokens: {
+        accessToken: String,
+        refreshToken: String,
+        expiresIn: {
+            type: mongoose.Schema.Types.Mixed,
+            default: null
+        }
+    },
     createdAt: {
         type: Date,
         default: Date.now,
-        expires: 300 // El código QR expira en 5 minutos
+        expires: 300
     },
     scannedAt: {
         type: Date,
@@ -35,7 +47,5 @@ const QRCodeSchema = new mongoose.Schema({
         default: null
     }
 });
-
-// Los índices se definen en el schema directamente para evitar duplicados
 
 module.exports = mongoose.model('QRCode', QRCodeSchema);

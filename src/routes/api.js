@@ -6,6 +6,14 @@ const AgentData = require('../models/AgentData');
 const User = require('../models/User');
 const router = express.Router();
 
+const ALLOWED_USER_ROLES = ['admin', 'operator', 'viewer', 'user'];
+
+function getConnectedAgentSocket(io, agentId) {
+    return Array.from(io.of('/').sockets.values()).find(
+        (socket) => socket.agentId === agentId && socket.data?.clientType === 'agent' && socket.data?.isAuthenticatedAgent
+    );
+}
+
 // Ruta para obtener información de agentes conectados (solo admin/operator)
 router.get('/agents', authenticateToken, authorizeRole('admin', 'operator'), async (req, res) => {
     try {
@@ -132,8 +140,7 @@ router.post('/agents/command', authenticateToken, authorizeRole('admin', 'operat
 
     if (agentId) {
         // Enviar comando a agente específico
-        const targetSocket = Array.from(io.of('/').sockets.values())
-            .find(socket => socket.agentId === agentId);
+        const targetSocket = getConnectedAgentSocket(io, agentId);
 
         if (targetSocket) {
             targetSocket.emit('command', commandData);
@@ -162,6 +169,18 @@ router.post('/agents/command', authenticateToken, authorizeRole('admin', 'operat
 router.get('/agents/:userId', authenticateToken, async (req, res) => {
     try {
         const { userId } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(userId)) {
+            return res.status(400).json({
+                success: false,
+                error: 'ID de usuario inválido'
+            });
+        }
+        if (req.user.role !== 'admin' && String(req.user._id) !== userId) {
+            return res.status(403).json({
+                success: false,
+                error: 'No tienes permisos para ver los agentes de este usuario'
+            });
+        }
         const agents = await Agent.find({ user: userId })
             .select('-apiKey')
             .populate('user', 'username email name surname');
@@ -253,7 +272,7 @@ router.post('/agents', authenticateToken, authorizeRole('admin'), async (req, re
             description,
             apiKey,
             location,
-            status: 'inactive'
+            status: 'offline'
         });
 
         await newAgent.save();
@@ -613,7 +632,7 @@ router.get('/users', authenticateToken, authorizeRole('admin'), async (req, res)
         if (isActive !== undefined) query.isActive = isActive === 'true';
 
         const users = await User.find(query)
-            .select('-password -refreshTokens')
+            .select('-password -refreshTokens -tokenInvalidBefore')
             .limit(limit * 1)
             .skip((page - 1) * limit)
             .sort({ createdAt: -1 });
@@ -649,12 +668,17 @@ router.post('/users', authenticateToken, authorizeRole('admin'), async (req, res
             return res.status(400).json({ success: false, error: 'La contraseña debe tener al menos 6 caracteres' });
         }
 
-        const exists = await User.findOne({ $or: [{ username }, { email }] });
+        if (!ALLOWED_USER_ROLES.includes(role)) {
+            return res.status(400).json({ success: false, error: 'Rol inválido' });
+        }
+
+        const normalizedEmail = String(email).trim().toLowerCase();
+        const exists = await User.findOne({ $or: [{ username }, { email: normalizedEmail }] });
         if (exists) {
             return res.status(409).json({ success: false, error: 'Usuario o email ya existe' });
         }
 
-        const newUser = new User({ username, email, password, role, name, surname, birthday, isActive });
+        const newUser = new User({ username, email: normalizedEmail, password, role, name, surname, birthday, isActive });
         await newUser.save();
 
         res.status(201).json({
@@ -679,7 +703,7 @@ router.get('/users/:id', authenticateToken, authorizeRole('admin'), async (req, 
         if (!mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({ success: false, error: 'ID de usuario inválido' });
         }
-        const user = await User.findById(id).select('-password -refreshTokens');
+        const user = await User.findById(id).select('-password -refreshTokens -tokenInvalidBefore');
         if (!user) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
         res.json({ success: true, data: { user } });
     } catch (error) {
@@ -698,9 +722,10 @@ router.patch('/users/:id', authenticateToken, authorizeRole('admin'), async (req
         const allowed = ['email', 'name', 'surname', 'birthday', 'isActive'];
         const updates = {};
         for (const k of allowed) if (req.body[k] !== undefined) updates[k] = req.body[k];
+        if (updates.email) updates.email = String(updates.email).trim().toLowerCase();
 
         const user = await User.findByIdAndUpdate(id, updates, { new: true, runValidators: true })
-            .select('-password -refreshTokens');
+            .select('-password -refreshTokens -tokenInvalidBefore');
         if (!user) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
 
         res.json({ success: true, message: 'Usuario actualizado', data: { user } });
@@ -722,12 +747,12 @@ router.patch('/users/:id/role', authenticateToken, authorizeRole('admin'), async
         if (!mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({ success: false, error: 'ID de usuario inválido' });
         }
-        if (!['admin', 'user'].includes(role)) {
+        if (!ALLOWED_USER_ROLES.includes(role)) {
             return res.status(400).json({ success: false, error: 'Rol inválido' });
         }
         // Prevenir que un admin se quite a sí mismo si es el único admin (opcional: requiere conteo)
         const user = await User.findByIdAndUpdate(id, { role }, { new: true, runValidators: true })
-            .select('-password -refreshTokens');
+            .select('-password -refreshTokens -tokenInvalidBefore');
         if (!user) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
         res.json({ success: true, message: 'Rol actualizado', data: { user } });
     } catch (error) {
@@ -752,7 +777,7 @@ router.patch('/users/:id/status', authenticateToken, authorizeRole('admin'), asy
             return res.status(400).json({ success: false, error: 'No puedes desactivar tu propio usuario' });
         }
         const user = await User.findByIdAndUpdate(id, { isActive }, { new: true, runValidators: true })
-            .select('-password -refreshTokens');
+            .select('-password -refreshTokens -tokenInvalidBefore');
         if (!user) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
         res.json({ success: true, message: 'Estado actualizado', data: { user } });
     } catch (error) {
@@ -792,7 +817,7 @@ router.post('/users/:id/logout-all', authenticateToken, authorizeRole('admin'), 
         }
         const user = await User.findById(id);
         if (!user) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
-        user.refreshTokens = [];
+        user.revokeAllSessions();
         await user.save();
         res.json({ success: true, message: 'Tokens revocados correctamente' });
     } catch (error) {

@@ -80,7 +80,7 @@ app.get('/health', (req, res) => {
 const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');
 const controlRoutes = require('./routes/control');
-const { errorHandler, customLogger } = require('./middleware/errorHandler');
+const { errorHandler, customLogger, notFoundHandler } = require('./middleware/errorHandler');
 const dashboardRoutes = require('./routes/dashboard');
 const whatsappRoutes = require('./routes/whatsapp');
 
@@ -106,6 +106,8 @@ app.get('/', (req, res) => {
         }
     });
 });
+
+app.use(notFoundHandler);
 
 // Middleware de manejo de errores (debe ir al final)
 app.use(errorHandler);

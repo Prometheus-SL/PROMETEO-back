@@ -1,222 +1,260 @@
 const http = require('http');
+const { randomBytes } = require('crypto');
 const { Server } = require('socket.io');
 const app = require('./app');
 const connectDB = require('./config/database');
 const Agent = require('./models/Agent');
 const AgentData = require('./models/AgentData');
+const Command = require('./models/Command');
+const { verifyAccessToken } = require('./middleware/auth');
 
 const PORT = process.env.PORT || 3000;
 
-// Conectar a la base de datos
 connectDB();
 
-// Crear servidor HTTP
 const server = http.createServer(app);
 
-// Configurar Socket.io
-// Configurar CORS para Socket.io coherente con Express
 const parseOrigins = (value) => {
     if (!value) return ['http://localhost:3001'];
     return value
         .split(',')
-        .map(s => s.trim())
+        .map((item) => item.trim())
         .filter(Boolean);
 };
+
 const allowedOrigins = parseOrigins(process.env.CORS_ORIGINS || process.env.CLIENT_URL);
 const allowCredentials = String(process.env.CORS_CREDENTIALS).toLowerCase() === 'true';
 
+function isOriginAllowed(origin) {
+    if (!origin) return true;
+    if (allowedOrigins.includes(origin)) return true;
+
+    return allowedOrigins.some((value) => {
+        if (!value.startsWith('/') || !value.endsWith('/')) {
+            return false;
+        }
+
+        try {
+            return new RegExp(value.slice(1, -1)).test(origin);
+        } catch (_error) {
+            return false;
+        }
+    });
+}
+
 const io = new Server(server, {
-    pingTimeout: 60000,
-    pingInterval: 25000,
+    pingTimeout: Number(process.env.SOCKET_PING_TIMEOUT || 60000),
+    pingInterval: Number(process.env.SOCKET_PING_INTERVAL || 25000),
+    cors: {
+        origin: (origin, callback) => {
+            if (isOriginAllowed(origin)) {
+                return callback(null, true);
+            }
+            return callback(new Error('Origen no permitido por CORS'));
+        },
+        credentials: allowCredentials,
+        methods: ['GET', 'POST']
+    }
 });
 
-// Estado global para manejar información de agentes
 const agentState = {
     connectedAgents: new Map(),
     latestData: null
 };
 
-// Configurar eventos de Socket.io
+function buildConnectionInfo(socket, overrides = {}) {
+    return {
+        socketId: socket.id,
+        ipAddress: socket.handshake.address,
+        userAgent: socket.handshake.headers['user-agent'] || null,
+        ...overrides
+    };
+}
+
+function registerConnectedAgent(socket, agentId) {
+    socket.agentId = agentId;
+    socket.data.clientType = 'agent';
+    socket.data.isAuthenticatedAgent = true;
+
+    const payload = {
+        agentId,
+        connectedAt: new Date(),
+        socketId: socket.id
+    };
+
+    agentState.connectedAgents.set(socket.id, payload);
+    socket.join('agents');
+    return payload;
+}
+
+async function attachAgentOwnership(userId, agentId) {
+    let agentDoc = await Agent.findOne({ agentId });
+    if (!agentDoc) {
+        agentDoc = new Agent({
+            agentId,
+            name: agentId,
+            description: 'Agente creado desde socket',
+            apiKey: randomBytes(32).toString('hex'),
+            user: userId,
+            status: 'offline'
+        });
+        await agentDoc.save();
+        return agentDoc;
+    }
+
+    if (!agentDoc.isActive) {
+        const error = new Error('El agente está desactivado');
+        error.status = 403;
+        throw error;
+    }
+
+    if (!agentDoc.user) {
+        agentDoc.user = userId;
+        await agentDoc.save();
+        return agentDoc;
+    }
+
+    if (String(agentDoc.user) !== String(userId)) {
+        const error = new Error('Este agente pertenece a otro usuario');
+        error.status = 403;
+        throw error;
+    }
+
+    return agentDoc;
+}
+
+async function updateAgentPresence(agentId, update) {
+    await Agent.findOneAndUpdate({ agentId }, update, { upsert: false });
+}
+
 io.on('connection', (socket) => {
+    socket.data.clientType = 'unknown';
+    socket.data.isAuthenticatedAgent = false;
+
     console.log(`Cliente conectado: ${socket.id}`);
 
-    // Evento para identificar el tipo de cliente (agente o frontend)
-    socket.on('identify', async (data) => {
-        const { type, agentId, token } = data;
+    socket.on('identify', async (data = {}) => {
+        const { type, agentId, token } = data || {};
 
         if (type === 'agent') {
-            // Registrar agente
             const finalAgentId = agentId || socket.id;
-            socket.agentId = finalAgentId;
 
-            agentState.connectedAgents.set(socket.id, {
-                agentId: finalAgentId,
-                connectedAt: new Date(),
-                socketId: socket.id
-            });
-
-            socket.join('agents');
-            console.log(`Agente registrado: ${finalAgentId}`);
-
-            // Validar token de usuario y propiedad del agente
             try {
-                const jwt = require('jsonwebtoken');
-                const User = require('./models/User');
-                const AgentModel = require('./models/Agent');
-
                 if (!token) {
-                    socket.emit('error', { message: 'Token requerido para agentes' });
-                    return socket.disconnect(true);
+                    throw new Error('Token requerido para agentes');
                 }
 
-                let decoded;
-                try {
-                    decoded = jwt.verify(token, process.env.JWT_SECRET);
-                } catch (err) {
-                    socket.emit('error', { message: 'Token inválido o expirado' });
-                    return socket.disconnect(true);
-                }
+                const auth = await verifyAccessToken(token);
+                const agentDoc = await attachAgentOwnership(auth.user._id, finalAgentId);
 
-                const user = await User.findById(decoded.id);
-                if (!user || !user.isActive) {
-                    socket.emit('error', { message: 'Usuario no válido o inactivo' });
-                    return socket.disconnect(true);
-                }
+                registerConnectedAgent(socket, finalAgentId);
+                socket.userId = auth.user._id.toString();
+                socket.data.sessionId = auth.sessionId || null;
 
-                // Verificar o asignar propiedad del agente
-                let agentDoc = await AgentModel.findOne({ agentId: finalAgentId });
-                if (!agentDoc) {
-                    // Crear agente básico vinculado a usuario si no existe
-                    const crypto = require('crypto');
-                    agentDoc = new AgentModel({
-                        agentId: finalAgentId,
-                        name: finalAgentId,
-                        description: 'Agente creado desde socket',
-                        apiKey: crypto.randomBytes(32).toString('hex'),
-                        user: user._id,
-                        status: 'offline'
-                    });
-                    await agentDoc.save();
-                } else if (!agentDoc.user) {
-                    agentDoc.user = user._id;
-                    await agentDoc.save();
-                } else if (String(agentDoc.user) !== String(user._id)) {
-                    socket.emit('error', { message: 'Este agente pertenece a otro usuario' });
-                    return socket.disconnect(true);
-                }
+                await updateAgentPresence(finalAgentId, {
+                    $set: {
+                        status: 'online',
+                        lastSeen: new Date(),
+                        connectionInfo: buildConnectionInfo(socket, {
+                            connectedAt: new Date(),
+                            disconnectedAt: null
+                        })
+                    }
+                });
 
-                // Guardar info del usuario en el socket
-                socket.userId = user._id.toString();
-
+                socket.to('frontend').emit('agent-connected', {
+                    agentId: finalAgentId,
+                    connectedAt: new Date(),
+                    userId: agentDoc.user
+                });
             } catch (error) {
                 console.error('Error validando agente/token:', error);
-                socket.emit('error', { message: 'Error de autenticación de agente' });
-                return socket.disconnect(true);
+                socket.emit('error', { message: error.message || 'Error de autenticación de agente' });
+                socket.disconnect(true);
             }
 
-            // Actualizar estado en base de datos
-            try {
-                await Agent.findOneAndUpdate(
-                    { agentId: finalAgentId },
-                    {
-                        $set: {
-                            status: "online",
-                            lastSeen: new Date(),
-                            'connectionInfo.socketId': socket.id,
-                            'connectionInfo.ipAddress': socket.handshake.address,
-                            'connectionInfo.userAgent': socket.handshake.headers['user-agent'],
-                            'connectionInfo.connectedAt': new Date()
-                        }
-                    },
-                    { upsert: false }
-                );
-            } catch (error) {
-                console.error('Error actualizando agente en BD:', error);
-            }
+            return;
+        }
 
-            // Notificar al frontend sobre el nuevo agente
-            socket.to('frontend').emit('agent-connected', {
-                agentId: finalAgentId,
-                connectedAt: new Date()
-            });
-        } else if (type === 'frontend') {
+        if (type === 'frontend') {
+            socket.data.clientType = 'frontend';
             socket.join('frontend');
             console.log('Cliente frontend conectado');
 
-            // Enviar estado actual de agentes conectados
-            const agents = Array.from(agentState.connectedAgents.values());
-            socket.emit('agents-status', agents);
+            socket.emit('agents-status', Array.from(agentState.connectedAgents.values()));
 
-            // Enviar último dato si existe
             if (agentState.latestData) {
                 socket.emit('agent-data', agentState.latestData);
             }
+
+            return;
         }
+
+        socket.emit('error', { message: 'Tipo de cliente no soportado' });
     });
 
-    // Evento para recibir datos del agente
-    socket.on('agent-data', async (data) => {
+    socket.on('agent-data', async (data = {}) => {
+        if (socket.data?.clientType !== 'agent' || !socket.data?.isAuthenticatedAgent || !socket.agentId) {
+            socket.emit('error', { message: 'Agente no autenticado' });
+            return;
+        }
+
         try {
-
-            const agentInfo = agentState.connectedAgents.get(socket.id);
-            const agentId = agentInfo?.agentId || socket.id;
-
-            // Guardar datos en MongoDB
             const agentData = new AgentData({
-                agentId: agentId,
-                data: data,
+                agentId: socket.agentId,
+                data,
                 dataType: data.dataType || 'sensor',
                 priority: data.priority || 'normal',
-                tags: data.tags || [],
-                metadata: {
-                    socketId: socket.id,
-                    ipAddress: socket.handshake.address,
-                    userAgent: socket.handshake.headers['user-agent']
-                }
+                tags: Array.isArray(data.tags) ? data.tags : [],
+                metadata: buildConnectionInfo(socket)
             });
 
             await agentData.save();
 
-            // Actualizar agente en base de datos
-            await Agent.findOneAndUpdate(
-                { agentId: agentId },
-                {
+            await updateAgentPresence(socket.agentId, {
+                $set: {
                     lastSeen: new Date(),
                     lastData: new Date(),
-                    'connectionInfo.socketId': socket.id
-                },
-                { upsert: false }
-            );
+                    connectionInfo: buildConnectionInfo(socket, {
+                        connectedAt: agentState.connectedAgents.get(socket.id)?.connectedAt || new Date(),
+                        disconnectedAt: null
+                    })
+                }
+            });
 
-            // Guardar último dato en memoria para compatibilidad
             agentState.latestData = {
                 ...data,
                 timestamp: agentData.createdAt,
-                agentId: agentId,
+                agentId: socket.agentId,
                 id: agentData._id
             };
 
-            // Reenviar datos al frontend
             io.to('frontend').emit('agent-data', agentState.latestData);
-
         } catch (error) {
             console.error('Error procesando datos del agente:', error);
             socket.emit('error', { message: 'Error procesando datos' });
         }
-    });    // Evento para solicitar datos específicos al agente
+    });
 
     socket.on('request-agent-data', (request) => {
-        // Reenviar solicitud a todos los agentes conectados
+        if (socket.data?.clientType !== 'frontend') {
+            socket.emit('error', { message: 'Solo el frontend puede solicitar datos' });
+            return;
+        }
+
         socket.to('agents').emit('data-request', request);
     });
 
-    // Evento para confirmar recepción de comando
-    socket.on('command-received', async (data) => {
+    socket.on('command-received', async (data = {}) => {
+        if (!socket.data?.isAuthenticatedAgent || !socket.agentId) {
+            return;
+        }
+
         try {
             const { commandId } = data;
-            const Command = require('./models/Command');
+            if (!commandId) return;
 
-            const command = await Command.findOne({ commandId });
+            const command = await Command.findOne({ commandId, agentId: socket.agentId });
             if (command) {
                 await command.markAsReceived();
                 console.log(`Comando ${commandId} recibido por agente ${socket.agentId}`);
@@ -226,13 +264,16 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Evento para respuesta de comando ejecutado
-    socket.on('command-response', async (data) => {
+    socket.on('command-response', async (data = {}) => {
+        if (!socket.data?.isAuthenticatedAgent || !socket.agentId) {
+            return;
+        }
+
         try {
             const { commandId, success, result, error, executionTime } = data;
-            const Command = require('./models/Command');
+            if (!commandId) return;
 
-            const command = await Command.findOne({ commandId });
+            const command = await Command.findOne({ commandId, agentId: socket.agentId });
             if (command) {
                 await command.markAsCompleted({
                     success,
@@ -243,7 +284,6 @@ io.on('connection', (socket) => {
 
                 console.log(`Comando ${commandId} ${success ? 'completado' : 'falló'} en agente ${socket.agentId}`);
 
-                // Notificar al frontend sobre el resultado
                 io.to('frontend').emit('command-result', {
                     commandId,
                     agentId: socket.agentId,
@@ -259,54 +299,53 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Evento de desconexión
     socket.on('disconnect', () => {
         console.log(`Cliente desconectado: ${socket.id}`);
 
-        // Si era un agente, removerlo del estado
-        if (agentState.connectedAgents.has(socket.id)) {
-            const agent = agentState.connectedAgents.get(socket.id);
-            agentState.connectedAgents.delete(socket.id);
-
-            // Notificar al frontend sobre la desconexión
-            io.to('frontend').emit('agent-disconnected', {
-                agentId: agent.agentId,
-                disconnectedAt: new Date()
-            });
-
-            // Actualizar estado en base de datos
-            Agent.findOneAndUpdate(
-                { agentId: agent.agentId },
-                { status: "offline", lastSeen: new Date() },
-                { upsert: false }
-            ).catch(err => console.error('Error actualizando estado de agente en BD:', err));
-
-            console.log(`Agente desconectado: ${agent.agentId}`);
+        if (!agentState.connectedAgents.has(socket.id)) {
+            return;
         }
+
+        const agent = agentState.connectedAgents.get(socket.id);
+        agentState.connectedAgents.delete(socket.id);
+
+        io.to('frontend').emit('agent-disconnected', {
+            agentId: agent.agentId,
+            disconnectedAt: new Date()
+        });
+
+        updateAgentPresence(agent.agentId, {
+            $set: {
+                status: 'offline',
+                lastSeen: new Date(),
+                connectionInfo: buildConnectionInfo(socket, {
+                    connectedAt: agent.connectedAt,
+                    disconnectedAt: new Date(),
+                    socketId: null
+                })
+            }
+        }).catch((error) => console.error('Error actualizando estado de agente en BD:', error));
+
+        console.log(`Agente desconectado: ${agent.agentId}`);
     });
 
-    // Evento para ping/pong personalizado
     socket.on('ping', () => {
         socket.emit('pong');
     });
 });
 
-// Hacer io accesible globalmente para uso en rutas si es necesario
 app.set('io', io);
 
-// Iniciar servidor
 server.listen(PORT, () => {
-    console.log(`🚀 Servidor PROMETEO funcionando en puerto ${PORT}`);
-    console.log(`📡 WebSocket listo para conexiones`);
-    console.log(`🌐 CORS habilitado para: ${allowedOrigins.join(', ')} | credenciales: ${allowCredentials}`);
+    console.log(`Servidor PROMETEO funcionando en puerto ${PORT}`);
+    console.log('WebSocket listo para conexiones');
+    console.log(`CORS habilitado para: ${allowedOrigins.join(', ')} | credenciales: ${allowCredentials}`);
 });
 
-// Manejo de errores del servidor
 server.on('error', (error) => {
     console.error('Error del servidor:', error);
 });
 
-// Manejo de cierre graceful
 process.on('SIGTERM', () => {
     console.log('Cerrando servidor...');
     server.close(() => {
