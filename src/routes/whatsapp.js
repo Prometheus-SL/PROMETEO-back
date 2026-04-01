@@ -21,10 +21,10 @@ function sendError(res, error) {
     res.status(status).json({ success: false, error: message });
 }
 
-router.get('/status', authenticateToken, async (_req, res) => {
+router.get('/status', authenticateToken, async (req, res) => {
     try {
-        await ensureClient();
-        res.json({ success: true, data: getStatus() });
+        await ensureClient(req.user);
+        res.json({ success: true, data: getStatus(req.user) });
     } catch (error) {
         sendError(res, error);
     }
@@ -34,7 +34,7 @@ router.get('/conversations', authenticateToken, async (req, res) => {
     try {
         const limit = parseLimit(req.query.limit, 8);
         const includeGroups = req.query.includeGroups !== 'false';
-        const data = await fetchConversations(limit, { includeGroups });
+        const data = await fetchConversations(req.user, limit, { includeGroups });
         res.json({ success: true, data });
     } catch (error) {
         sendError(res, error);
@@ -44,7 +44,7 @@ router.get('/conversations', authenticateToken, async (req, res) => {
 router.get('/conversations/:chatId/messages', authenticateToken, async (req, res) => {
     try {
         const limit = parseLimit(req.query.limit, 20);
-        const data = await fetchMessages(req.params.chatId, limit);
+        const data = await fetchMessages(req.user, req.params.chatId, limit);
         res.json({ success: true, data });
     } catch (error) {
         sendError(res, error);
