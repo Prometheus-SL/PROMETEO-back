@@ -14,6 +14,32 @@ function getConnectedAgentSocket(io, agentId) {
     );
 }
 
+function canReadAllAgents(user) {
+    return ['admin', 'operator'].includes(user?.role);
+}
+
+async function getOwnedAgentIds(userId) {
+    const agents = await Agent.find({ user: userId }).select('agentId').lean();
+    return agents.map((agent) => agent.agentId);
+}
+
+async function buildAccessibleAgentQuery(req, requestedAgentId) {
+    if (canReadAllAgents(req.user)) {
+        return requestedAgentId ? { agentId: requestedAgentId } : {};
+    }
+
+    const ownedAgentIds = await getOwnedAgentIds(req.user._id);
+    if (requestedAgentId && !ownedAgentIds.includes(requestedAgentId)) {
+        const error = new Error('No tienes permisos para ver este agente');
+        error.status = 403;
+        throw error;
+    }
+
+    return requestedAgentId
+        ? { agentId: requestedAgentId }
+        : { agentId: { $in: ownedAgentIds } };
+}
+
 // Ruta para obtener información de agentes conectados (solo admin/operator)
 router.get('/agents', authenticateToken, authorizeRole('admin', 'operator'), async (req, res) => {
     try {
@@ -68,6 +94,28 @@ router.get('/agents', authenticateToken, authorizeRole('admin', 'operator'), asy
         });
     } catch (error) {
         console.error('Error obteniendo agentes:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error interno del servidor'
+        });
+    }
+});
+
+router.get('/agents/me', authenticateToken, async (req, res) => {
+    try {
+        const agents = await Agent.find({ user: req.user._id })
+            .select('-apiKey')
+            .sort({ lastSeen: -1, createdAt: -1 });
+
+        res.json({
+            success: true,
+            data: {
+                agents,
+                total: agents.length
+            }
+        });
+    } catch (error) {
+        console.error('Error obteniendo agentes propios:', error);
         res.status(500).json({
             success: false,
             error: 'Error interno del servidor'
@@ -206,10 +254,10 @@ router.get('/agents/:userId', authenticateToken, async (req, res) => {
 // Ruta para obtener el último dato recibido
 router.get('/data/latest', authenticateToken, async (req, res) => {
     try {
-        const { agentId, limit = 10 } = req.query;
+        const { agentId, limit = 10, dataType } = req.query;
 
-        let query = {};
-        if (agentId) query.agentId = agentId;
+        const query = await buildAccessibleAgentQuery(req, agentId);
+        if (dataType) query.dataType = dataType;
 
         const latestData = await AgentData.find(query)
             .sort({ createdAt: -1 })
@@ -234,9 +282,9 @@ router.get('/data/latest', authenticateToken, async (req, res) => {
         });
     } catch (error) {
         console.error('Error obteniendo datos:', error);
-        res.status(500).json({
+        res.status(error.status || 500).json({
             success: false,
-            error: 'Error interno del servidor'
+            error: error.message || 'Error interno del servidor'
         });
     }
 });
@@ -325,7 +373,7 @@ router.get('/agents/:agentId/data', authenticateToken, async (req, res) => {
         } = req.query;
 
         // Construir query
-        let query = { agentId };
+        let query = await buildAccessibleAgentQuery(req, agentId);
 
         if (startDate || endDate) {
             query.createdAt = {};
@@ -357,9 +405,9 @@ router.get('/agents/:agentId/data', authenticateToken, async (req, res) => {
 
     } catch (error) {
         console.error('Error obteniendo datos del agente:', error);
-        res.status(500).json({
+        res.status(error.status || 500).json({
             success: false,
-            error: 'Error interno del servidor'
+            error: error.message || 'Error interno del servidor'
         });
     }
 });

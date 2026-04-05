@@ -59,8 +59,17 @@ const io = new Server(server, {
 
 const agentState = {
     connectedAgents: new Map(),
-    latestData: null
+    latestDataByAgent: new Map()
 };
+const MANUAL_AGENT_MODES = new Set(['manual', 'interactive']);
+
+function isPrivilegedUser(user) {
+    return ['admin', 'operator'].includes(user?.role);
+}
+
+function buildFrontendUserRoom(userId) {
+    return `frontend:user:${String(userId)}`;
+}
 
 function buildConnectionInfo(socket, overrides = {}) {
     return {
@@ -71,20 +80,104 @@ function buildConnectionInfo(socket, overrides = {}) {
     };
 }
 
-function registerConnectedAgent(socket, agentId) {
+function bytesToGigabytes(bytes) {
+    const numericBytes = Number(bytes) || 0;
+    return Number((numericBytes / (1024 * 1024 * 1024)).toFixed(2));
+}
+
+function buildComputerInfoFromSnapshot(snapshot = {}) {
+    const disks = Array.isArray(snapshot?.resources?.disks) ? snapshot.resources.disks : [];
+    const interfaces = Array.isArray(snapshot?.network?.interfaces) ? snapshot.network.interfaces : [];
+
+    return {
+        hostname: snapshot?.system?.hostname || null,
+        username: snapshot?.system?.username || null,
+        os: {
+            platform: snapshot?.system?.os?.platform || null,
+            release: snapshot?.system?.os?.release || null,
+            arch: snapshot?.system?.os?.arch || null
+        },
+        hardware: {
+            cpu: {
+                model: snapshot?.resources?.cpu?.model || null,
+                cores: snapshot?.resources?.cpu?.cores || null,
+                speed: snapshot?.resources?.cpu?.speedMHz || null
+            },
+            memory: {
+                total: bytesToGigabytes(snapshot?.resources?.memory?.totalBytes),
+                available: bytesToGigabytes(snapshot?.resources?.memory?.freeBytes)
+            },
+            storage: disks.map((disk) => ({
+                drive: disk.drive,
+                total: bytesToGigabytes(disk.totalBytes),
+                free: bytesToGigabytes(disk.freeBytes)
+            }))
+        },
+        network: {
+            ip: snapshot?.network?.ip || null,
+            mac: snapshot?.network?.mac || null,
+            interfaces: interfaces.map((item) => `${item.name}:${item.address}`)
+        }
+    };
+}
+
+function buildEffectiveSnapshot(socket, data = {}) {
+    if (data?.dataType !== 'system_status') {
+        return data;
+    }
+
+    const previous = agentState.latestDataByAgent.get(socket.agentId);
+    const incomingAudioAvailable = data?.audio?.available === true;
+    const previousAudioAvailable = previous?.audio?.available === true;
+    const isServiceSnapshot = !MANUAL_AGENT_MODES.has(String(data?.mode || socket.data?.agentMode || '').toLowerCase());
+
+    if (incomingAudioAvailable || !previousAudioAvailable || !isServiceSnapshot) {
+        return data;
+    }
+
+    return {
+        ...data,
+        audio: previous.audio,
+    };
+}
+
+function registerConnectedAgent(socket, agentId, userId, mode = null) {
     socket.agentId = agentId;
+    socket.userId = String(userId);
     socket.data.clientType = 'agent';
     socket.data.isAuthenticatedAgent = true;
+    socket.data.agentOwnerId = String(userId);
+    socket.data.agentMode = mode || socket.data.agentMode || 'service';
 
     const payload = {
         agentId,
+        userId: String(userId),
         connectedAt: new Date(),
-        socketId: socket.id
+        socketId: socket.id,
+        mode: socket.data.agentMode
     };
 
+    socket.data.connectedAt = payload.connectedAt.getTime();
     agentState.connectedAgents.set(socket.id, payload);
     socket.join('agents');
     return payload;
+}
+
+function getConnectedAgentsForUser(user) {
+    const values = Array.from(agentState.connectedAgents.values());
+    if (isPrivilegedUser(user)) {
+        return values;
+    }
+
+    return values.filter((agent) => String(agent.userId) === String(user._id));
+}
+
+function emitToAuthorizedFrontends(event, payload, ownerUserId) {
+    const target = ownerUserId
+        ? io.to('frontend:admins').to(buildFrontendUserRoom(ownerUserId))
+        : io.to('frontend:admins');
+
+    target.emit(event, payload);
 }
 
 async function attachAgentOwnership(userId, agentId) {
@@ -103,7 +196,7 @@ async function attachAgentOwnership(userId, agentId) {
     }
 
     if (!agentDoc.isActive) {
-        const error = new Error('El agente está desactivado');
+        const error = new Error('El agente estÃ¡ desactivado');
         error.status = 403;
         throw error;
     }
@@ -124,7 +217,7 @@ async function attachAgentOwnership(userId, agentId) {
 }
 
 async function updateAgentPresence(agentId, update) {
-    await Agent.findOneAndUpdate({ agentId }, update, { upsert: false });
+    return Agent.findOneAndUpdate({ agentId }, update, { upsert: false, new: true });
 }
 
 io.on('connection', (socket) => {
@@ -134,7 +227,7 @@ io.on('connection', (socket) => {
     console.log(`Cliente conectado: ${socket.id}`);
 
     socket.on('identify', async (data = {}) => {
-        const { type, agentId, token } = data || {};
+        const { type, agentId, token, mode } = data || {};
 
         if (type === 'agent') {
             const finalAgentId = agentId || socket.id;
@@ -147,8 +240,7 @@ io.on('connection', (socket) => {
                 const auth = await verifyAccessToken(token);
                 const agentDoc = await attachAgentOwnership(auth.user._id, finalAgentId);
 
-                registerConnectedAgent(socket, finalAgentId);
-                socket.userId = auth.user._id.toString();
+                registerConnectedAgent(socket, finalAgentId, auth.user._id, mode);
                 socket.data.sessionId = auth.sessionId || null;
 
                 await updateAgentPresence(finalAgentId, {
@@ -162,14 +254,14 @@ io.on('connection', (socket) => {
                     }
                 });
 
-                socket.to('frontend').emit('agent-connected', {
+                emitToAuthorizedFrontends('agent-connected', {
                     agentId: finalAgentId,
                     connectedAt: new Date(),
-                    userId: agentDoc.user
-                });
+                    userId: String(agentDoc.user)
+                }, agentDoc.user);
             } catch (error) {
                 console.error('Error validando agente/token:', error);
-                socket.emit('error', { message: error.message || 'Error de autenticación de agente' });
+                socket.emit('error', { message: error.message || 'Error de autenticaciÃ³n de agente' });
                 socket.disconnect(true);
             }
 
@@ -177,14 +269,29 @@ io.on('connection', (socket) => {
         }
 
         if (type === 'frontend') {
-            socket.data.clientType = 'frontend';
-            socket.join('frontend');
-            console.log('Cliente frontend conectado');
+            try {
+                if (!token) {
+                    throw new Error('Token requerido para frontend');
+                }
 
-            socket.emit('agents-status', Array.from(agentState.connectedAgents.values()));
+                const auth = await verifyAccessToken(token);
+                socket.data.clientType = 'frontend';
+                socket.data.isAuthenticatedFrontend = true;
+                socket.userId = String(auth.user._id);
+                socket.userRole = auth.user.role;
+                socket.join('frontend');
+                socket.join(buildFrontendUserRoom(auth.user._id));
 
-            if (agentState.latestData) {
-                socket.emit('agent-data', agentState.latestData);
+                if (isPrivilegedUser(auth.user)) {
+                    socket.join('frontend:admins');
+                }
+
+                console.log(`Cliente frontend autenticado: ${socket.userId}`);
+                socket.emit('agents-status', getConnectedAgentsForUser(auth.user));
+            } catch (error) {
+                console.error('Error autenticando frontend en socket:', error);
+                socket.emit('error', { message: error.message || 'Error de autenticaciÃ³n de frontend' });
+                socket.disconnect(true);
             }
 
             return;
@@ -200,36 +307,49 @@ io.on('connection', (socket) => {
         }
 
         try {
+            socket.data.agentMode = data.mode || socket.data.agentMode || 'service';
+            socket.data.audioAvailable = data?.audio?.available === true;
+
+            const effectiveData = buildEffectiveSnapshot(socket, data);
+            const dataType = effectiveData.dataType || 'sensor';
             const agentData = new AgentData({
                 agentId: socket.agentId,
-                data,
-                dataType: data.dataType || 'sensor',
-                priority: data.priority || 'normal',
-                tags: Array.isArray(data.tags) ? data.tags : [],
+                data: effectiveData,
+                dataType,
+                priority: effectiveData.priority || 'normal',
+                tags: Array.isArray(effectiveData.tags) ? effectiveData.tags : [],
                 metadata: buildConnectionInfo(socket)
             });
 
             await agentData.save();
 
+            const updatePayload = {
+                lastSeen: new Date(),
+                lastData: new Date(),
+                status: 'online',
+                connectionInfo: buildConnectionInfo(socket, {
+                    connectedAt: agentState.connectedAgents.get(socket.id)?.connectedAt || new Date(),
+                    disconnectedAt: null
+                })
+            };
+
+            if (dataType === 'system_status') {
+                updatePayload.computerInfo = buildComputerInfoFromSnapshot(effectiveData);
+            }
+
             await updateAgentPresence(socket.agentId, {
-                $set: {
-                    lastSeen: new Date(),
-                    lastData: new Date(),
-                    connectionInfo: buildConnectionInfo(socket, {
-                        connectedAt: agentState.connectedAgents.get(socket.id)?.connectedAt || new Date(),
-                        disconnectedAt: null
-                    })
-                }
+                $set: updatePayload
             });
 
-            agentState.latestData = {
-                ...data,
+            const payload = {
+                ...effectiveData,
                 timestamp: agentData.createdAt,
                 agentId: socket.agentId,
                 id: agentData._id
             };
 
-            io.to('frontend').emit('agent-data', agentState.latestData);
+            agentState.latestDataByAgent.set(socket.agentId, payload);
+            emitToAuthorizedFrontends('agent-data', payload, socket.data.agentOwnerId);
         } catch (error) {
             console.error('Error procesando datos del agente:', error);
             socket.emit('error', { message: 'Error procesando datos' });
@@ -237,8 +357,8 @@ io.on('connection', (socket) => {
     });
 
     socket.on('request-agent-data', (request) => {
-        if (socket.data?.clientType !== 'frontend') {
-            socket.emit('error', { message: 'Solo el frontend puede solicitar datos' });
+        if (socket.data?.clientType !== 'frontend' || !socket.data?.isAuthenticatedFrontend) {
+            socket.emit('error', { message: 'Solo el frontend autenticado puede solicitar datos' });
             return;
         }
 
@@ -282,9 +402,9 @@ io.on('connection', (socket) => {
                     executionTime
                 });
 
-                console.log(`Comando ${commandId} ${success ? 'completado' : 'falló'} en agente ${socket.agentId}`);
+                console.log(`Comando ${commandId} ${success ? 'completado' : 'fallÃ³'} en agente ${socket.agentId}`);
 
-                io.to('frontend').emit('command-result', {
+                emitToAuthorizedFrontends('command-result', {
                     commandId,
                     agentId: socket.agentId,
                     success,
@@ -292,7 +412,7 @@ io.on('connection', (socket) => {
                     error,
                     executionTime,
                     timestamp: new Date().toISOString()
-                });
+                }, socket.data.agentOwnerId);
             }
         } catch (error) {
             console.error('Error procesando respuesta de comando:', error);
@@ -309,10 +429,10 @@ io.on('connection', (socket) => {
         const agent = agentState.connectedAgents.get(socket.id);
         agentState.connectedAgents.delete(socket.id);
 
-        io.to('frontend').emit('agent-disconnected', {
+        emitToAuthorizedFrontends('agent-disconnected', {
             agentId: agent.agentId,
             disconnectedAt: new Date()
-        });
+        }, agent.userId);
 
         updateAgentPresence(agent.agentId, {
             $set: {

@@ -25,6 +25,8 @@ const commandSchema = new mongoose.Schema({
             'volume_unmute',
             'volume_up',
             'volume_down',
+            'audio_output_set',
+            'get_audio_state',
 
             // Control de sesión
             'lock_screen',

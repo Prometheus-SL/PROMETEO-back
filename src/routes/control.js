@@ -5,11 +5,52 @@ const Agent = require('../models/Agent');
 const Command = require('../models/Command');
 
 const router = express.Router();
+const CONTROL_ROLES = ['admin', 'operator', 'user'];
+const AUDIO_COMMANDS = new Set([
+    'volume_set',
+    'volume_mute',
+    'volume_unmute',
+    'volume_up',
+    'volume_down',
+    'audio_output_set',
+    'get_audio_state',
+]);
 
-function getConnectedAgentSocket(io, agentId) {
-    return Array.from(io.of('/').sockets.values()).find(
+function getConnectedAgentSocket(io, agentId, commandName = '') {
+    const sockets = Array.from(io.of('/').sockets.values()).filter(
         (socket) => socket.agentId === agentId && socket.data?.clientType === 'agent' && socket.data?.isAuthenticatedAgent
     );
+
+    if (sockets.length === 0) {
+        return null;
+    }
+
+    const isAudioCommand = AUDIO_COMMANDS.has(String(commandName || ''));
+    const ranked = [...sockets].sort((left, right) => {
+        const leftMode = String(left.data?.agentMode || '');
+        const rightMode = String(right.data?.agentMode || '');
+        const leftConnectedAt = Number(left.data?.connectedAt || 0);
+        const rightConnectedAt = Number(right.data?.connectedAt || 0);
+
+        if (isAudioCommand) {
+            const leftScore =
+                (left.data?.audioAvailable ? 10 : 0) +
+                (leftMode === 'manual' ? 5 : 0) +
+                leftConnectedAt;
+            const rightScore =
+                (right.data?.audioAvailable ? 10 : 0) +
+                (rightMode === 'manual' ? 5 : 0) +
+                rightConnectedAt;
+
+            return rightScore - leftScore;
+        }
+
+        const leftScore = (leftMode === 'service' ? 5 : 0) + leftConnectedAt;
+        const rightScore = (rightMode === 'service' ? 5 : 0) + rightConnectedAt;
+        return rightScore - leftScore;
+    });
+
+    return ranked[0] || null;
 }
 
 function buildRealtimeCommand(commandDoc, userName) {
@@ -22,6 +63,45 @@ function buildRealtimeCommand(commandDoc, userName) {
         sentBy: userName,
         timestamp: new Date().toISOString()
     };
+}
+
+function canControlAllAgents(user) {
+    return ['admin', 'operator'].includes(user?.role);
+}
+
+function ensureControlRole(user) {
+    if (CONTROL_ROLES.includes(user?.role)) {
+        return;
+    }
+
+    const error = new Error('No tienes permisos para controlar agentes');
+    error.status = 403;
+    throw error;
+}
+
+async function getControllableAgent(user, agentId) {
+    ensureControlRole(user);
+
+    if (!agentId) {
+        const error = new Error('Agent ID es requerido');
+        error.status = 400;
+        throw error;
+    }
+
+    const agent = await Agent.findOne({ agentId, isActive: { $ne: false } });
+    if (!agent) {
+        const error = new Error('Agente no encontrado');
+        error.status = 404;
+        throw error;
+    }
+
+    if (!canControlAllAgents(user) && String(agent.user) !== String(user._id)) {
+        const error = new Error('No tienes permisos para controlar este agente');
+        error.status = 403;
+        throw error;
+    }
+
+    return agent;
 }
 
 async function createCommandRecord({ agentId, command, parameters = {}, priority = 'normal', scheduledFor, sentBy }) {
@@ -52,7 +132,7 @@ async function dispatchIfOnline(req, agent, commandDoc) {
     }
 
     const io = req.app.get('io');
-    const targetSocket = getConnectedAgentSocket(io, agent.agentId);
+    const targetSocket = getConnectedAgentSocket(io, agent.agentId, commandDoc.command);
     if (!targetSocket) {
         return false;
     }
@@ -79,13 +159,7 @@ async function handleSingleCommand(req, res, payload = req.body || {}) {
         });
     }
 
-    const agent = await Agent.findOne({ agentId, isActive: { $ne: false } });
-    if (!agent) {
-        return res.status(404).json({
-            success: false,
-            error: 'Agente no encontrado'
-        });
-    }
+    const agent = await getControllableAgent(req.user, agentId);
 
     if (!scheduledFor && agent.status !== 'online') {
         return res.status(400).json({
@@ -118,7 +192,7 @@ async function handleSingleCommand(req, res, payload = req.body || {}) {
     });
 }
 
-router.post('/command', authenticateToken, authorizeRole('admin', 'operator'), async (req, res) => {
+router.post('/command', authenticateToken, async (req, res) => {
     try {
         return await handleSingleCommand(req, res);
     } catch (error) {
@@ -145,15 +219,7 @@ router.post('/commands/batch', authenticateToken, authorizeRole('admin', 'operat
 
         for (const agentId of agentIds) {
             try {
-                const agent = await Agent.findOne({ agentId, isActive: { $ne: false } });
-                if (!agent) {
-                    results.push({
-                        agentId,
-                        success: false,
-                        error: 'Agente no encontrado'
-                    });
-                    continue;
-                }
+                const agent = await getControllableAgent(req.user, agentId);
 
                 const newCommand = await createCommandRecord({
                     agentId,
@@ -206,6 +272,10 @@ router.get('/commands/:commandId', authenticateToken, async (req, res) => {
             });
         }
 
+        if (!canControlAllAgents(req.user)) {
+            await getControllableAgent(req.user, command.agentId);
+        }
+
         res.json({
             success: true,
             data: { command }
@@ -225,6 +295,8 @@ router.get('/agents/:agentId/commands', authenticateToken, async (req, res) => {
         const page = Number(req.query.page) || 1;
         const limit = Number(req.query.limit) || 20;
         const { status } = req.query;
+
+        await getControllableAgent(req.user, agentId);
 
         const query = { agentId };
         if (status) query.status = status;
