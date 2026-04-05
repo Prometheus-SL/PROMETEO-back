@@ -90,18 +90,14 @@ const userSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// Middleware para hash de password antes de guardar
-userSchema.pre('save', async function (next) {
+// Middleware para hash de password antes de guardar.
+// En Mongoose 9 los hooks async deben devolver promesas y no mezclar `next`.
+userSchema.pre('save', async function () {
     // Solo hash si password fue modificado
-    if (!this.isModified('password')) return next();
+    if (!this.isModified('password')) return;
 
-    try {
-        const salt = await bcrypt.genSalt(12);
-        this.password = await bcrypt.hash(this.password, salt);
-        next();
-    } catch (error) {
-        next(error);
-    }
+    const salt = await bcrypt.genSalt(12);
+    this.password = await bcrypt.hash(this.password, salt);
 });
 
 // Método para comparar passwords
