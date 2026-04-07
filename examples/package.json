@@ -1,0 +1,13 @@
+{
+  "name": "prometeo-examples",
+  "version": "1.0.0",
+  "description": "Ejemplos de clientes para el backend PROMETEO",
+  "scripts": {
+    "agent": "node agent-client.js",
+    "frontend": "node frontend-client.js",
+    "computer-agent": "node computer-agent.js"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.7.5"
+  }
+}
