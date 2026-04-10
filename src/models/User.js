@@ -15,20 +15,110 @@ const sessionSchema = new mongoose.Schema({
     },
     createdAt: {
         type: Date,
-        default: Date.now
+        default: Date.now,
     },
     lastUsedAt: {
         type: Date,
-        default: Date.now
+        default: Date.now,
     },
     userAgent: {
         type: String,
-        trim: true
+        trim: true,
     },
     ip: {
         type: String,
-        trim: true
-    }
+        trim: true,
+    },
+}, { _id: false });
+
+const encryptedPayloadSchema = new mongoose.Schema({
+    alg: {
+        type: String,
+        default: 'aes-256-gcm',
+    },
+    iv: {
+        type: String,
+        trim: true,
+    },
+    tag: {
+        type: String,
+        trim: true,
+    },
+    ciphertext: {
+        type: String,
+        trim: true,
+    },
+    version: {
+        type: Number,
+        default: 1,
+    },
+}, { _id: false });
+
+const spotifyProfileSchema = new mongoose.Schema({
+    id: {
+        type: String,
+        trim: true,
+    },
+    displayName: {
+        type: String,
+        trim: true,
+    },
+    email: {
+        type: String,
+        trim: true,
+        lowercase: true,
+    },
+    avatarUrl: {
+        type: String,
+        trim: true,
+    },
+    product: {
+        type: String,
+        trim: true,
+    },
+    externalUrl: {
+        type: String,
+        trim: true,
+    },
+}, { _id: false });
+
+const spotifyLinkedAccountSchema = new mongoose.Schema({
+    status: {
+        type: String,
+        enum: ['disconnected', 'connected', 'reauth_required'],
+        default: 'disconnected',
+    },
+    profile: {
+        type: spotifyProfileSchema,
+        default: undefined,
+    },
+    scopes: {
+        type: [String],
+        default: [],
+    },
+    connectedAt: {
+        type: Date,
+        default: null,
+    },
+    tokenExpiresAt: {
+        type: Date,
+        default: null,
+    },
+    lastError: {
+        type: String,
+        default: null,
+    },
+    credentials: {
+        type: encryptedPayloadSchema,
+        default: undefined,
+    },
+}, { _id: false });
+
+const linkedAccountsSchema = new mongoose.Schema({
+    spotify: {
+        type: spotifyLinkedAccountSchema,
+        default: () => ({ status: 'disconnected', scopes: [] }),
+    },
 }, { _id: false });
 
 const userSchema = new mongoose.Schema({
@@ -38,74 +128,73 @@ const userSchema = new mongoose.Schema({
         unique: true,
         trim: true,
         minlength: [3, 'Username debe tener al menos 3 caracteres'],
-        maxlength: [30, 'Username no puede exceder 30 caracteres']
+        maxlength: [30, 'Username no puede exceder 30 caracteres'],
     },
     email: {
         type: String,
         required: [true, 'Email es requerido'],
         unique: true,
         lowercase: true,
-        validate: [validator.isEmail, 'Email inválido']
+        validate: [validator.isEmail, 'Email invalido'],
     },
     password: {
         type: String,
         required: [true, 'Password es requerido'],
         minlength: [6, 'Password debe tener al menos 6 caracteres'],
-        select: false // No incluir password en consultas por defecto
+        select: false,
     },
     role: {
         type: String,
         enum: ['admin', 'operator', 'viewer', 'user'],
-        default: 'user'
+        default: 'user',
     },
     name: {
         type: String,
         trim: true,
-        maxlength: [50, 'Name no puede exceder 50 caracteres']
+        maxlength: [50, 'Name no puede exceder 50 caracteres'],
     },
     surname: {
         type: String,
         trim: true,
-        maxlength: [50, 'Surname no puede exceder 50 caracteres']
+        maxlength: [50, 'Surname no puede exceder 50 caracteres'],
     },
     birthday: {
-        type: Date
+        type: Date,
     },
     isActive: {
         type: Boolean,
-        default: true
+        default: true,
     },
     lastLogin: {
-        type: Date
+        type: Date,
     },
     tokenInvalidBefore: {
         type: Date,
-        default: null
+        default: null,
     },
     refreshTokens: {
         type: [sessionSchema],
-        default: []
-    }
+        default: [],
+    },
+    linkedAccounts: {
+        type: linkedAccountsSchema,
+        default: () => ({}),
+    },
 }, {
-    timestamps: true
+    timestamps: true,
 });
 
-// Middleware para hash de password antes de guardar.
-// En Mongoose 9 los hooks async deben devolver promesas y no mezclar `next`.
 userSchema.pre('save', async function () {
-    // Solo hash si password fue modificado
     if (!this.isModified('password')) return;
 
     const salt = await bcrypt.genSalt(12);
     this.password = await bcrypt.hash(this.password, salt);
 });
 
-// Método para comparar passwords
 userSchema.methods.matchPassword = async function (enteredPassword) {
     return await bcrypt.compare(enteredPassword, this.password);
 };
 
-// Registra o actualiza una sesión activa para que el access token pueda revocarse.
 userSchema.methods.registerSession = function ({
     sessionId,
     refreshToken,
@@ -114,7 +203,7 @@ userSchema.methods.registerSession = function ({
     createdAt = new Date(),
 }) {
     if (!refreshToken) {
-        throw new Error('refreshToken es requerido para registrar la sesión');
+        throw new Error('refreshToken es requerido para registrar la sesion');
     }
 
     const currentSessions = Array.isArray(this.refreshTokens) ? this.refreshTokens : [];
@@ -184,12 +273,34 @@ userSchema.methods.revokeAllSessions = function () {
     return this;
 };
 
-// Método para obtener usuario sin datos sensibles
+userSchema.methods.clearLinkedAccount = function (provider) {
+    if (!provider) return this;
+
+    if (provider === 'spotify') {
+        this.linkedAccounts = this.linkedAccounts || {};
+        this.linkedAccounts.spotify = {
+            status: 'disconnected',
+            profile: undefined,
+            scopes: [],
+            connectedAt: null,
+            tokenExpiresAt: null,
+            lastError: null,
+            credentials: undefined,
+        };
+    }
+
+    return this;
+};
+
 userSchema.methods.toJSON = function () {
     const user = this.toObject();
     delete user.password;
     delete user.refreshTokens;
     delete user.tokenInvalidBefore;
+    if (user.linkedAccounts?.spotify) {
+        delete user.linkedAccounts.spotify.credentials;
+    }
+    delete user.linkedAccounts;
     return user;
 };
 
