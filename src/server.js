@@ -460,6 +460,7 @@ server.listen(PORT, () => {
     console.log(`Servidor PROMETEO funcionando en puerto ${PORT}`);
     console.log('WebSocket listo para conexiones');
     console.log(`CORS habilitado para: ${allowedOrigins.join(', ')} | credenciales: ${allowCredentials}`);
+
 });
 
 server.on('error', (error) => {

@@ -64,8 +64,8 @@ app.use(cors(corsOptions));
 app.options('/{*any}', cors(corsOptions));
 
 // Middleware para parsear JSON
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 // Ruta básica de salud
 app.get('/health', (req, res) => {
@@ -83,6 +83,7 @@ const controlRoutes = require('./routes/control');
 const { errorHandler, customLogger, notFoundHandler } = require('./middleware/errorHandler');
 const dashboardRoutes = require('./routes/dashboard');
 const whatsappRoutes = require('./routes/whatsapp');
+const discordRoutes = require('./routes/discord');
 
 // Middleware de logging personalizado
 app.use(customLogger);
@@ -91,6 +92,7 @@ app.use(customLogger);
 app.use('/api/v1', apiRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
 app.use('/api/v1/whatsapp', whatsappRoutes);
+app.use('/api/v1/discord', discordRoutes);
 app.use('/auth', authRoutes);
 app.use('/control', controlRoutes);
 
