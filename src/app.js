@@ -79,9 +79,11 @@ app.get('/health', (req, res) => {
 // Importar rutas y middleware
 const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');
+const accountRoutes = require('./routes/account');
 const controlRoutes = require('./routes/control');
 const { errorHandler, customLogger, notFoundHandler } = require('./middleware/errorHandler');
 const dashboardRoutes = require('./routes/dashboard');
+const spotifyRoutes = require('./routes/spotify');
 const whatsappRoutes = require('./routes/whatsapp');
 const discordRoutes = require('./routes/discord');
 
@@ -90,7 +92,9 @@ app.use(customLogger);
 
 // Configurar rutas
 app.use('/api/v1', apiRoutes);
+app.use('/api/v1/account', accountRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
+app.use('/api/v1/integrations/spotify', spotifyRoutes);
 app.use('/api/v1/whatsapp', whatsappRoutes);
 app.use('/api/v1/discord', discordRoutes);
 app.use('/auth', authRoutes);
