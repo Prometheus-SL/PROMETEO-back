@@ -27,6 +27,7 @@ async function initBot() {
                 GatewayIntentBits.Guilds,
                 GatewayIntentBits.GuildMembers,
                 GatewayIntentBits.GuildPresences,
+                GatewayIntentBits.GuildVoiceStates,
             ],
         });
 
@@ -89,22 +90,39 @@ async function getGuildInfo(guildId) {
     const guild = bot.guilds.cache.get(guildId);
     if (!guild) throw Object.assign(new Error('El bot no está en ese servidor'), { status: 404 });
 
-    // Fetch members to get presence data
-    try {
-        await guild.members.fetch({ withPresences: true, time: 10000 });
-    } catch (err) {
-        console.warn('[Discord] No se pudieron cargar todos los miembros, usando cache:', err.message);
+    // Populate member cache once; subsequent presence updates arrive via gateway events
+    if (guild.members.cache.size < guild.memberCount) {
+        try {
+            await guild.members.fetch({ withPresences: true, time: 10000 });
+        } catch (err) {
+            console.warn('[Discord] No se pudieron cargar todos los miembros, usando cache:', err.message);
+        }
     }
 
     const channels = guild.channels.cache
         .filter(ch => ch.type === 0 || ch.type === 2) // text or voice
         .sort((a, b) => a.position - b.position)
-        .map(ch => ({
-            id: ch.id,
-            name: ch.name,
-            type: ch.type === 0 ? 'text' : 'voice',
-            members: ch.type === 2 ? ch.members.size : undefined,
-        }));
+        .map(ch => {
+            if (ch.type !== 2) {
+                return { id: ch.id, name: ch.name, type: 'text' };
+            }
+            const voiceMembers = ch.members.map(m => ({
+                id: m.id,
+                name: m.displayName,
+                avatar: m.displayAvatarURL({ size: 64 }),
+                muted: Boolean(m.voice?.mute || m.voice?.selfMute),
+                deafened: Boolean(m.voice?.deaf || m.voice?.selfDeaf),
+                streaming: Boolean(m.voice?.streaming),
+                video: Boolean(m.voice?.selfVideo),
+            }));
+            return {
+                id: ch.id,
+                name: ch.name,
+                type: 'voice',
+                members: voiceMembers.length,
+                voiceMembers,
+            };
+        });
 
     const members = guild.members.cache
         .filter(m => !m.user.bot)
@@ -133,9 +151,132 @@ function getInviteUrl() {
     if (!client) return null;
     const clientId = client.user?.id || process.env.DISCORD_CLIENT_ID;
     if (!clientId) return null;
-    // Permissions: View Channels, Read Message History
-    const permissions = 1024 + 65536;
+    // View Channels (1024) + Read Message History (65536) + Move Members (16777216)
+    const permissions = 1024 + 65536 + 16777216;
     return `https://discord.com/oauth2/authorize?client_id=${clientId}&permissions=${permissions}&scope=bot`;
 }
 
-module.exports = { initBot, getClient, getStatus, getGuildInfo, getInviteUrl };
+async function disconnectVoiceMember(guildId, userId) {
+    const bot = getClient();
+    if (!bot) throw Object.assign(new Error('Bot no conectado'), { code: 'BOT_NOT_READY' });
+
+    let guild = bot.guilds.cache.get(guildId);
+    if (!guild) throw Object.assign(new Error('El bot no está en ese servidor'), { status: 404 });
+
+    // Forzar refresco del guild (ownerId puede estar cacheado obsoleto)
+    try {
+        guild = await guild.fetch();
+    } catch (err) {
+        console.warn('[Discord] No se pudo refrescar guild:', err.message);
+    }
+
+    const member = await guild.members.fetch({ user: userId, force: true }).catch(() => null);
+    if (!member) throw Object.assign(new Error('Miembro no encontrado'), { status: 404 });
+
+    if (!member.voice?.channelId) {
+        throw Object.assign(new Error('El miembro no está en un canal de voz'), { status: 409 });
+    }
+
+    const botMember = guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+    if (!botMember) {
+        throw Object.assign(new Error('El bot no está presente como miembro'), { status: 500 });
+    }
+
+    console.log('[Discord] disconnect attempt', {
+        guildId: guild.id,
+        guildOwnerId: guild.ownerId,
+        targetId: member.id,
+        targetName: member.displayName,
+        targetHighestRole: `${member.roles.highest.name}@${member.roles.highest.position}`,
+        botId: botMember.id,
+        botHighestRole: `${botMember.roles.highest.name}@${botMember.roles.highest.position}`,
+        isOwner: member.id === guild.ownerId,
+    });
+
+    // Pre-checks para dar mensajes claros en vez de un 403 genérico de Discord
+    if (member.id === guild.ownerId) {
+        throw Object.assign(
+            new Error('No se puede desconectar al dueño del servidor'),
+            { status: 403 },
+        );
+    }
+
+    if (botMember.roles.highest.position <= member.roles.highest.position) {
+        throw Object.assign(
+            new Error(
+                `Jerarquía insuficiente. Bot: ${botMember.roles.highest.name} (pos ${botMember.roles.highest.position}) · Target: ${member.roles.highest.name} (pos ${member.roles.highest.position}).`,
+            ),
+            { status: 403 },
+        );
+    }
+
+    try {
+        await member.voice.disconnect('Expulsado desde el widget Prometeo');
+    } catch (err) {
+        const status = err?.status ?? err?.httpStatus ?? 500;
+        const code = err?.code;
+        throw Object.assign(
+            new Error(`Discord rechazó la acción (${code ?? status}): ${err?.message ?? 'sin detalles'}`),
+            { status },
+        );
+    }
+
+    return { id: member.id, name: member.displayName };
+}
+
+async function setVoiceMute(guildId, userId, mute) {
+    const bot = getClient();
+    if (!bot) throw Object.assign(new Error('Bot no conectado'), { code: 'BOT_NOT_READY' });
+
+    let guild = bot.guilds.cache.get(guildId);
+    if (!guild) throw Object.assign(new Error('El bot no está en ese servidor'), { status: 404 });
+
+    try {
+        guild = await guild.fetch();
+    } catch (err) {
+        console.warn('[Discord] No se pudo refrescar guild:', err.message);
+    }
+
+    const member = await guild.members.fetch({ user: userId, force: true }).catch(() => null);
+    if (!member) throw Object.assign(new Error('Miembro no encontrado'), { status: 404 });
+
+    if (!member.voice?.channelId) {
+        throw Object.assign(new Error('El miembro no está en un canal de voz'), { status: 409 });
+    }
+
+    const botMember = guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+    if (!botMember) {
+        throw Object.assign(new Error('El bot no está presente como miembro'), { status: 500 });
+    }
+
+    if (member.id === guild.ownerId) {
+        throw Object.assign(
+            new Error('No se puede mutear al dueño del servidor'),
+            { status: 403 },
+        );
+    }
+
+    if (botMember.roles.highest.position <= member.roles.highest.position) {
+        throw Object.assign(
+            new Error(
+                `Jerarquía insuficiente. Bot: ${botMember.roles.highest.name} (pos ${botMember.roles.highest.position}) · Target: ${member.roles.highest.name} (pos ${member.roles.highest.position}).`,
+            ),
+            { status: 403 },
+        );
+    }
+
+    try {
+        await member.voice.setMute(Boolean(mute), mute ? 'Muteado desde el widget Prometeo' : 'Desmuteado desde el widget Prometeo');
+    } catch (err) {
+        const status = err?.status ?? err?.httpStatus ?? 500;
+        const code = err?.code;
+        throw Object.assign(
+            new Error(`Discord rechazó la acción (${code ?? status}): ${err?.message ?? 'sin detalles'}`),
+            { status },
+        );
+    }
+
+    return { id: member.id, name: member.displayName, muted: Boolean(mute) };
+}
+
+module.exports = { initBot, getClient, getStatus, getGuildInfo, getInviteUrl, disconnectVoiceMember, setVoiceMute };

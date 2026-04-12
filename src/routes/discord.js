@@ -1,6 +1,6 @@
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
-const { initBot, getStatus, getGuildInfo, getInviteUrl } = require('../services/discord/client');
+const { initBot, getStatus, getGuildInfo, getInviteUrl, disconnectVoiceMember, setVoiceMute } = require('../services/discord/client');
 
 const router = express.Router();
 
@@ -33,6 +33,27 @@ router.get('/status', authenticateToken, ensureBot, async (_req, res) => {
 router.get('/guilds/:guildId', authenticateToken, ensureBot, async (req, res) => {
     try {
         const data = await getGuildInfo(req.params.guildId);
+        res.json({ success: true, data });
+    } catch (error) {
+        sendError(res, error);
+    }
+});
+
+// Desconectar a un miembro de su canal de voz actual
+router.post('/guilds/:guildId/voice/:userId/disconnect', authenticateToken, ensureBot, async (req, res) => {
+    try {
+        const data = await disconnectVoiceMember(req.params.guildId, req.params.userId);
+        res.json({ success: true, data });
+    } catch (error) {
+        sendError(res, error);
+    }
+});
+
+// Mutear/desmutear a un miembro en su canal de voz actual
+router.post('/guilds/:guildId/voice/:userId/mute', authenticateToken, ensureBot, async (req, res) => {
+    try {
+        const mute = req.body?.mute !== false;
+        const data = await setVoiceMute(req.params.guildId, req.params.userId, mute);
         res.json({ success: true, data });
     } catch (error) {
         sendError(res, error);
