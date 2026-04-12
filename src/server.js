@@ -148,6 +148,7 @@ function registerConnectedAgent(socket, agentId, userId, mode = null) {
     socket.data.isAuthenticatedAgent = true;
     socket.data.agentOwnerId = String(userId);
     socket.data.agentMode = mode || socket.data.agentMode || 'service';
+    socket.data.mediaAvailable = false;
 
     const payload = {
         agentId,
@@ -309,6 +310,9 @@ io.on('connection', (socket) => {
         try {
             socket.data.agentMode = data.mode || socket.data.agentMode || 'service';
             socket.data.audioAvailable = data?.audio?.available === true;
+            if (data?.dataType === 'media_update') {
+                socket.data.mediaAvailable = data?.media?.available === true;
+            }
 
             const effectiveData = buildEffectiveSnapshot(socket, data);
             const dataType = effectiveData.dataType || 'sensor';

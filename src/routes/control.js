@@ -15,6 +15,14 @@ const AUDIO_COMMANDS = new Set([
     'audio_output_set',
     'get_audio_state',
 ]);
+const MEDIA_COMMANDS = new Set([
+    'media_refresh',
+    'media_toggle_playback',
+    'media_play',
+    'media_pause',
+    'media_next',
+    'media_previous',
+]);
 
 function getConnectedAgentSocket(io, agentId, commandName = '') {
     const sockets = Array.from(io.of('/').sockets.values()).filter(
@@ -25,7 +33,9 @@ function getConnectedAgentSocket(io, agentId, commandName = '') {
         return null;
     }
 
-    const isAudioCommand = AUDIO_COMMANDS.has(String(commandName || ''));
+    const normalizedCommand = String(commandName || '');
+    const isAudioCommand = AUDIO_COMMANDS.has(normalizedCommand);
+    const isMediaCommand = MEDIA_COMMANDS.has(normalizedCommand);
     const ranked = [...sockets].sort((left, right) => {
         const leftMode = String(left.data?.agentMode || '');
         const rightMode = String(right.data?.agentMode || '');
@@ -40,6 +50,19 @@ function getConnectedAgentSocket(io, agentId, commandName = '') {
             const rightScore =
                 (right.data?.audioAvailable ? 10 : 0) +
                 (rightMode === 'manual' ? 5 : 0) +
+                rightConnectedAt;
+
+            return rightScore - leftScore;
+        }
+
+        if (isMediaCommand) {
+            const leftScore =
+                (left.data?.mediaAvailable ? 15 : 0) +
+                (leftMode === 'service' ? 5 : 0) +
+                leftConnectedAt;
+            const rightScore =
+                (right.data?.mediaAvailable ? 15 : 0) +
+                (rightMode === 'service' ? 5 : 0) +
                 rightConnectedAt;
 
             return rightScore - leftScore;
