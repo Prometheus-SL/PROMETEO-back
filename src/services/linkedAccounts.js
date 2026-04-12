@@ -166,6 +166,7 @@ function serializeDiscordLinkedAccount(discord) {
 
     return {
         status,
+        id: profile.id || null,
         displayName: profile.displayName || profile.globalName || profile.username || null,
         username: profile.username || null,
         avatarUrl: profile.avatarUrl || null,
