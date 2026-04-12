@@ -27,6 +27,12 @@ const commandSchema = new mongoose.Schema({
             'volume_down',
             'audio_output_set',
             'get_audio_state',
+            'media_refresh',
+            'media_toggle_playback',
+            'media_play',
+            'media_pause',
+            'media_next',
+            'media_previous',
 
             // Control de sesión
             'lock_screen',
