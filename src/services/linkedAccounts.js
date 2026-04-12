@@ -160,9 +160,27 @@ function serializeSpotifyLinkedAccount(spotify) {
     };
 }
 
+function serializeDiscordLinkedAccount(discord) {
+    const status = discord?.status || 'disconnected';
+    const profile = discord?.profile || {};
+
+    return {
+        status,
+        displayName: profile.displayName || profile.globalName || profile.username || null,
+        username: profile.username || null,
+        avatarUrl: profile.avatarUrl || null,
+        connectedAt: discord?.connectedAt || null,
+        scopes: Array.isArray(discord?.scopes) ? discord.scopes : [],
+        lastError: discord?.lastError || null,
+        email: profile.email || null,
+        verified: typeof profile.verified === 'boolean' ? profile.verified : null,
+    };
+}
+
 function serializeLinkedAccounts(linkedAccounts) {
     return {
         spotify: serializeSpotifyLinkedAccount(linkedAccounts?.spotify),
+        discord: serializeDiscordLinkedAccount(linkedAccounts?.discord),
     };
 }
 
@@ -235,6 +253,7 @@ module.exports = {
     getDefaultClientOrigin,
     normalizeOrigin,
     resolveReturnOrigin,
+    serializeDiscordLinkedAccount,
     serializeLinkedAccounts,
     serializeSpotifyLinkedAccount,
     serializeUserSummary,

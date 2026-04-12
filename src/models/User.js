@@ -114,9 +114,81 @@ const spotifyLinkedAccountSchema = new mongoose.Schema({
     },
 }, { _id: false });
 
+const discordProfileSchema = new mongoose.Schema({
+    id: {
+        type: String,
+        trim: true,
+    },
+    username: {
+        type: String,
+        trim: true,
+    },
+    globalName: {
+        type: String,
+        trim: true,
+    },
+    displayName: {
+        type: String,
+        trim: true,
+    },
+    email: {
+        type: String,
+        trim: true,
+        lowercase: true,
+    },
+    avatarUrl: {
+        type: String,
+        trim: true,
+    },
+    locale: {
+        type: String,
+        trim: true,
+    },
+    verified: {
+        type: Boolean,
+        default: null,
+    },
+}, { _id: false });
+
+const discordLinkedAccountSchema = new mongoose.Schema({
+    status: {
+        type: String,
+        enum: ['disconnected', 'connected', 'reauth_required'],
+        default: 'disconnected',
+    },
+    profile: {
+        type: discordProfileSchema,
+        default: undefined,
+    },
+    scopes: {
+        type: [String],
+        default: [],
+    },
+    connectedAt: {
+        type: Date,
+        default: null,
+    },
+    tokenExpiresAt: {
+        type: Date,
+        default: null,
+    },
+    lastError: {
+        type: String,
+        default: null,
+    },
+    credentials: {
+        type: encryptedPayloadSchema,
+        default: undefined,
+    },
+}, { _id: false });
+
 const linkedAccountsSchema = new mongoose.Schema({
     spotify: {
         type: spotifyLinkedAccountSchema,
+        default: () => ({ status: 'disconnected', scopes: [] }),
+    },
+    discord: {
+        type: discordLinkedAccountSchema,
         default: () => ({ status: 'disconnected', scopes: [] }),
     },
 }, { _id: false });
@@ -289,6 +361,19 @@ userSchema.methods.clearLinkedAccount = function (provider) {
         };
     }
 
+    if (provider === 'discord') {
+        this.linkedAccounts = this.linkedAccounts || {};
+        this.linkedAccounts.discord = {
+            status: 'disconnected',
+            profile: undefined,
+            scopes: [],
+            connectedAt: null,
+            tokenExpiresAt: null,
+            lastError: null,
+            credentials: undefined,
+        };
+    }
+
     return this;
 };
 
@@ -299,6 +384,9 @@ userSchema.methods.toJSON = function () {
     delete user.tokenInvalidBefore;
     if (user.linkedAccounts?.spotify) {
         delete user.linkedAccounts.spotify.credentials;
+    }
+    if (user.linkedAccounts?.discord) {
+        delete user.linkedAccounts.discord.credentials;
     }
     delete user.linkedAccounts;
     return user;
