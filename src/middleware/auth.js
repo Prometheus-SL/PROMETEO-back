@@ -2,11 +2,10 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Agent = require('../models/Agent');
+const { createHttpError } = require('../http/errors');
 
-function createAuthError(status, message) {
-    const error = new Error(message);
-    error.status = status;
-    return error;
+function createAuthError(status, code, message) {
+    return createHttpError(status, code, message);
 }
 
 function extractBearerToken(req) {
@@ -23,11 +22,11 @@ function extractBearerToken(req) {
     return token;
 }
 
-function decodeJwt(token, secret, invalidMessage) {
+function decodeJwt(token, secret, invalidMessage, invalidCode) {
     try {
         return jwt.verify(token, secret, { ignoreExpiration: true });
     } catch (_error) {
-        throw createAuthError(403, invalidMessage);
+        throw createAuthError(403, invalidCode, invalidMessage);
     }
 }
 
@@ -42,7 +41,7 @@ function wasTokenInvalidated(decoded, user) {
 async function loadActiveUser(userId) {
     const user = await User.findById(userId);
     if (!user || !user.isActive) {
-        throw createAuthError(401, 'Usuario no encontrado o inactivo');
+        throw createAuthError(401, 'USER_INACTIVE', 'User not found or inactive');
     }
 
     return user;
@@ -50,22 +49,22 @@ async function loadActiveUser(userId) {
 
 async function verifyAccessToken(token) {
     if (!token) {
-        throw createAuthError(401, 'Token de acceso requerido');
+        throw createAuthError(401, 'ACCESS_TOKEN_REQUIRED', 'Access token is required');
     }
 
-    const decoded = decodeJwt(token, process.env.JWT_SECRET, 'Token inválido');
+    const decoded = decodeJwt(token, process.env.JWT_SECRET, 'Access token is invalid', 'INVALID_ACCESS_TOKEN');
     if (decoded?.type && decoded.type !== 'access') {
-        throw createAuthError(403, 'Token inválido');
+        throw createAuthError(403, 'INVALID_ACCESS_TOKEN', 'Access token is invalid');
     }
 
     const user = await loadActiveUser(decoded.id);
 
     if (wasTokenInvalidated(decoded, user)) {
-        throw createAuthError(401, 'La sesión fue cerrada. Inicia sesión de nuevo');
+        throw createAuthError(401, 'SESSION_REVOKED', 'The session has been closed. Sign in again.');
     }
 
     if (decoded.sessionId && !user.hasSession(decoded.sessionId)) {
-        throw createAuthError(401, 'La sesión ya no está activa');
+        throw createAuthError(401, 'SESSION_NOT_ACTIVE', 'The session is no longer active.');
     }
 
     return {
@@ -78,18 +77,23 @@ async function verifyAccessToken(token) {
 
 async function verifyRefreshTokenValue(refreshToken) {
     if (!refreshToken) {
-        throw createAuthError(401, 'Refresh token requerido');
+        throw createAuthError(401, 'REFRESH_TOKEN_REQUIRED', 'Refresh token is required');
     }
 
-    const decoded = decodeJwt(refreshToken, process.env.JWT_REFRESH_SECRET, 'Refresh token inválido');
+    const decoded = decodeJwt(
+        refreshToken,
+        process.env.JWT_REFRESH_SECRET,
+        'Refresh token is invalid',
+        'INVALID_REFRESH_TOKEN'
+    );
     if (decoded?.type && decoded.type !== 'refresh') {
-        throw createAuthError(403, 'Refresh token inválido');
+        throw createAuthError(403, 'INVALID_REFRESH_TOKEN', 'Refresh token is invalid');
     }
 
     const user = await loadActiveUser(decoded.id);
 
     if (wasTokenInvalidated(decoded, user)) {
-        throw createAuthError(401, 'La sesión fue cerrada. Inicia sesión de nuevo');
+        throw createAuthError(401, 'SESSION_REVOKED', 'The session has been closed. Sign in again.');
     }
 
     const isKnownToken = decoded.sessionId
@@ -97,7 +101,7 @@ async function verifyRefreshTokenValue(refreshToken) {
         : user.hasRefreshToken(refreshToken);
 
     if (!isKnownToken) {
-        throw createAuthError(403, 'Refresh token inválido');
+        throw createAuthError(403, 'INVALID_REFRESH_TOKEN', 'Refresh token is invalid');
     }
 
     return {
@@ -108,8 +112,7 @@ async function verifyRefreshTokenValue(refreshToken) {
     };
 }
 
-// Middleware para verificar JWT
-const authenticateToken = async (req, res, next) => {
+const authenticateToken = async (req, _res, next) => {
     try {
         const token = extractBearerToken(req);
         const auth = await verifyAccessToken(token);
@@ -118,89 +121,68 @@ const authenticateToken = async (req, res, next) => {
         req.auth = auth;
         next();
     } catch (error) {
-        return res.status(error.status || 403).json({
-            success: false,
-            error: error.message || 'Token inválido'
-        });
+        next(error);
     }
 };
 
-// Middleware para verificar que un agentId pertenece al usuario autenticado
-const requireAgentOwnership = async (req, res, next) => {
+const requireAgentOwnership = async (req, _res, next) => {
     try {
         if (!req.user) {
-            return res.status(401).json({ success: false, error: 'Usuario no autenticado' });
+            return next(createHttpError(401, 'UNAUTHENTICATED', 'User is not authenticated'));
         }
 
         const agentId = req.headers['x-agent-id'] || req.body.agentId || req.params.agentId;
         if (!agentId) {
-            return res.status(400).json({ success: false, error: 'agentId es requerido' });
+            return next(createHttpError(400, 'AGENT_ID_REQUIRED', 'agentId is required'));
         }
 
         const agent = await Agent.findOne({ agentId, user: req.user._id });
         if (!agent) {
-            return res.status(403).json({ success: false, error: 'El agente no pertenece al usuario autenticado' });
+            return next(createHttpError(403, 'AGENT_ACCESS_DENIED', 'The authenticated user does not own this agent'));
         }
 
         req.agent = agent;
         if (req.body && req.body.agentId && req.body.agentId !== agent.agentId) {
-            return res.status(403).json({ success: false, error: 'agentId no coincide con el agente del usuario' });
+            return next(createHttpError(403, 'AGENT_ID_MISMATCH', 'agentId does not match the owned agent'));
         }
 
         next();
     } catch (error) {
-        console.error('Error verificando propiedad de agente:', error);
-        return res.status(500).json({ success: false, error: 'Error interno del servidor' });
+        console.error('Error checking agent ownership:', error);
+        next(createHttpError(500, 'INTERNAL_SERVER_ERROR', 'Internal server error'));
     }
 };
 
-// Middleware para verificar roles específicos
 const authorizeRole = (...roles) => {
-    return (req, res, next) => {
+    return (req, _res, next) => {
         if (!req.user) {
-            return res.status(401).json({
-                success: false,
-                error: 'Usuario no autenticado'
-            });
+            return next(createHttpError(401, 'UNAUTHENTICATED', 'User is not authenticated'));
         }
 
         if (!roles.includes(req.user.role)) {
-            return res.status(403).json({
-                success: false,
-                error: 'No tienes permisos para acceder a este recurso'
-            });
+            return next(createHttpError(403, 'FORBIDDEN', 'You do not have permission to access this resource'));
         }
 
         next();
     };
 };
 
-// Middleware para autenticación de agentes (API Key)
-const authenticateAgent = async (req, res, next) => {
+const authenticateAgent = async (req, _res, next) => {
     try {
         const apiKey = req.headers['x-api-key'];
         const agentId = req.headers['x-agent-id'];
 
         if (!apiKey) {
-            return res.status(401).json({
-                success: false,
-                error: 'API Key requerida'
-            });
+            return next(createHttpError(401, 'API_KEY_REQUIRED', 'API key is required'));
         }
 
         const agent = await Agent.findOne({ apiKey, isActive: { $ne: false } });
         if (!agent) {
-            return res.status(403).json({
-                success: false,
-                error: 'API Key inválida o agente inactivo'
-            });
+            return next(createHttpError(403, 'INVALID_API_KEY', 'API key is invalid or the agent is inactive'));
         }
 
         if (agentId && agent.agentId !== agentId) {
-            return res.status(403).json({
-                success: false,
-                error: 'Agent ID no coincide'
-            });
+            return next(createHttpError(403, 'AGENT_ID_MISMATCH', 'Agent ID does not match the API key owner'));
         }
 
         agent.lastSeen = new Date();
@@ -209,15 +191,11 @@ const authenticateAgent = async (req, res, next) => {
         req.agent = agent;
         next();
     } catch (error) {
-        console.error('Error en autenticación de agente:', error);
-        return res.status(500).json({
-            success: false,
-            error: 'Error interno del servidor'
-        });
+        console.error('Error in agent authentication:', error);
+        next(createHttpError(500, 'INTERNAL_SERVER_ERROR', 'Internal server error'));
     }
 };
 
-// Middleware para autenticación opcional (no falla si no hay token)
 const optionalAuth = async (req, _res, next) => {
     try {
         const token = extractBearerToken(req);
@@ -234,7 +212,6 @@ const optionalAuth = async (req, _res, next) => {
     }
 };
 
-// Utilidad para generar tokens JWT sin caducidad automática.
 const generateTokens = (user, options = {}) => {
     const sessionId = options.sessionId || crypto.randomUUID();
 
@@ -245,7 +222,7 @@ const generateTokens = (user, options = {}) => {
             email: user.email,
             role: user.role,
             sessionId,
-            type: 'access'
+            type: 'access',
         },
         process.env.JWT_SECRET
     );
@@ -254,7 +231,7 @@ const generateTokens = (user, options = {}) => {
         {
             id: user._id,
             sessionId,
-            type: 'refresh'
+            type: 'refresh',
         },
         process.env.JWT_REFRESH_SECRET
     );
@@ -262,7 +239,7 @@ const generateTokens = (user, options = {}) => {
     return { accessToken, refreshToken, sessionId, expiresIn: null };
 };
 
-const verifyRefreshToken = async (req, res, next) => {
+const verifyRefreshToken = async (req, _res, next) => {
     try {
         const refreshToken = req.body?.refreshToken;
         const auth = await verifyRefreshTokenValue(refreshToken);
@@ -272,10 +249,7 @@ const verifyRefreshToken = async (req, res, next) => {
         req.auth = auth;
         next();
     } catch (error) {
-        return res.status(error.status || 403).json({
-            success: false,
-            error: error.message || 'Refresh token inválido'
-        });
+        next(error);
     }
 };
 

@@ -3,78 +3,13 @@ const { randomUUID } = require('crypto');
 const { authenticateToken, authorizeRole } = require('../middleware/auth');
 const Agent = require('../models/Agent');
 const Command = require('../models/Command');
+const { asyncHandler } = require('../http/asyncHandler');
+const { createHttpError } = require('../http/errors');
+const { created, ok } = require('../http/responses');
+const { selectConnectedAgentSocket } = require('../services/socketAgents');
 
 const router = express.Router();
 const CONTROL_ROLES = ['admin', 'operator', 'user'];
-const AUDIO_COMMANDS = new Set([
-    'volume_set',
-    'volume_mute',
-    'volume_unmute',
-    'volume_up',
-    'volume_down',
-    'audio_output_set',
-    'get_audio_state',
-]);
-const MEDIA_COMMANDS = new Set([
-    'media_refresh',
-    'media_toggle_playback',
-    'media_play',
-    'media_pause',
-    'media_next',
-    'media_previous',
-]);
-
-function getConnectedAgentSocket(io, agentId, commandName = '') {
-    const sockets = Array.from(io.of('/').sockets.values()).filter(
-        (socket) => socket.agentId === agentId && socket.data?.clientType === 'agent' && socket.data?.isAuthenticatedAgent
-    );
-
-    if (sockets.length === 0) {
-        return null;
-    }
-
-    const normalizedCommand = String(commandName || '');
-    const isAudioCommand = AUDIO_COMMANDS.has(normalizedCommand);
-    const isMediaCommand = MEDIA_COMMANDS.has(normalizedCommand);
-    const ranked = [...sockets].sort((left, right) => {
-        const leftMode = String(left.data?.agentMode || '');
-        const rightMode = String(right.data?.agentMode || '');
-        const leftConnectedAt = Number(left.data?.connectedAt || 0);
-        const rightConnectedAt = Number(right.data?.connectedAt || 0);
-
-        if (isAudioCommand) {
-            const leftScore =
-                (left.data?.audioAvailable ? 10 : 0) +
-                (leftMode === 'manual' ? 5 : 0) +
-                leftConnectedAt;
-            const rightScore =
-                (right.data?.audioAvailable ? 10 : 0) +
-                (rightMode === 'manual' ? 5 : 0) +
-                rightConnectedAt;
-
-            return rightScore - leftScore;
-        }
-
-        if (isMediaCommand) {
-            const leftScore =
-                (left.data?.mediaAvailable ? 15 : 0) +
-                (leftMode === 'service' ? 5 : 0) +
-                leftConnectedAt;
-            const rightScore =
-                (right.data?.mediaAvailable ? 15 : 0) +
-                (rightMode === 'service' ? 5 : 0) +
-                rightConnectedAt;
-
-            return rightScore - leftScore;
-        }
-
-        const leftScore = (leftMode === 'service' ? 5 : 0) + leftConnectedAt;
-        const rightScore = (rightMode === 'service' ? 5 : 0) + rightConnectedAt;
-        return rightScore - leftScore;
-    });
-
-    return ranked[0] || null;
-}
 
 function buildRealtimeCommand(commandDoc, userName) {
     return {
@@ -84,7 +19,7 @@ function buildRealtimeCommand(commandDoc, userName) {
         parameters: commandDoc.parameters,
         priority: commandDoc.priority,
         sentBy: userName,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
     };
 }
 
@@ -97,31 +32,23 @@ function ensureControlRole(user) {
         return;
     }
 
-    const error = new Error('No tienes permisos para controlar agentes');
-    error.status = 403;
-    throw error;
+    throw createHttpError(403, 'AGENT_CONTROL_FORBIDDEN', 'You do not have permission to control agents');
 }
 
 async function getControllableAgent(user, agentId) {
     ensureControlRole(user);
 
     if (!agentId) {
-        const error = new Error('Agent ID es requerido');
-        error.status = 400;
-        throw error;
+        throw createHttpError(400, 'AGENT_ID_REQUIRED', 'Agent ID is required');
     }
 
     const agent = await Agent.findOne({ agentId, isActive: { $ne: false } });
     if (!agent) {
-        const error = new Error('Agente no encontrado');
-        error.status = 404;
-        throw error;
+        throw createHttpError(404, 'AGENT_NOT_FOUND', 'Agent not found');
     }
 
     if (!canControlAllAgents(user) && String(agent.user) !== String(user._id)) {
-        const error = new Error('No tienes permisos para controlar este agente');
-        error.status = 403;
-        throw error;
+        throw createHttpError(403, 'AGENT_CONTROL_FORBIDDEN', 'You do not have permission to control this agent');
     }
 
     return agent;
@@ -130,9 +57,7 @@ async function getControllableAgent(user, agentId) {
 async function createCommandRecord({ agentId, command, parameters = {}, priority = 'normal', scheduledFor, sentBy }) {
     const scheduledDate = scheduledFor ? new Date(scheduledFor) : new Date();
     if (Number.isNaN(scheduledDate.getTime())) {
-        const error = new Error('Fecha programada inválida');
-        error.status = 400;
-        throw error;
+        throw createHttpError(400, 'INVALID_SCHEDULED_FOR', 'scheduledFor must be a valid date');
     }
 
     const commandDoc = new Command({
@@ -142,7 +67,7 @@ async function createCommandRecord({ agentId, command, parameters = {}, priority
         command,
         parameters,
         priority,
-        scheduledFor: scheduledDate
+        scheduledFor: scheduledDate,
     });
 
     await commandDoc.save();
@@ -155,7 +80,7 @@ async function dispatchIfOnline(req, agent, commandDoc) {
     }
 
     const io = req.app.get('io');
-    const targetSocket = getConnectedAgentSocket(io, agent.agentId, commandDoc.command);
+    const targetSocket = selectConnectedAgentSocket(io, agent.agentId, commandDoc.command);
     if (!targetSocket) {
         return false;
     }
@@ -172,209 +97,144 @@ async function handleSingleCommand(req, res, payload = req.body || {}) {
         args = {},
         parameters,
         priority = 'normal',
-        scheduledFor
+        scheduledFor,
     } = payload || {};
 
     if (!agentId || !command) {
-        return res.status(400).json({
-            success: false,
-            error: 'Agent ID y comando son requeridos'
-        });
+        throw createHttpError(400, 'COMMAND_PAYLOAD_INVALID', 'Agent ID and command are required');
     }
 
     const agent = await getControllableAgent(req.user, agentId);
 
     if (!scheduledFor && agent.status !== 'online') {
-        return res.status(400).json({
-            success: false,
-            error: 'El agente debe estar online para enviar comandos inmediatos'
-        });
+        throw createHttpError(400, 'AGENT_OFFLINE', 'The agent must be online for immediate commands');
     }
 
     const commandParameters = parameters !== undefined ? parameters : args;
-    const newCommand = await createCommandRecord({
+    const commandDoc = await createCommandRecord({
         agentId,
         command,
         parameters: commandParameters,
         priority,
         scheduledFor,
-        sentBy: req.user.username
+        sentBy: req.user.username,
     });
 
-    await dispatchIfOnline(req, agent, newCommand);
+    await dispatchIfOnline(req, agent, commandDoc);
 
-    return res.status(201).json({
-        success: true,
-        message: 'Comando enviado exitosamente',
-        data: {
-            commandId: newCommand.commandId,
-            status: newCommand.status,
-            priority: newCommand.priority,
-            scheduledFor: newCommand.scheduledFor
-        }
+    return created(res, {
+        commandId: commandDoc.commandId,
+        status: commandDoc.status,
+        priority: commandDoc.priority,
+        scheduledFor: commandDoc.scheduledFor,
+    }, {
+        message: 'Command queued successfully',
     });
 }
 
-router.post('/command', authenticateToken, async (req, res) => {
-    try {
-        return await handleSingleCommand(req, res);
-    } catch (error) {
-        console.error('Error enviando comando:', error);
-        res.status(error.status || 500).json({
-            success: false,
-            error: error.message || 'Error interno del servidor'
-        });
+router.post('/command', authenticateToken, asyncHandler(async (req, res) => {
+    return handleSingleCommand(req, res);
+}));
+
+router.post('/commands/batch', authenticateToken, authorizeRole('admin', 'operator'), asyncHandler(async (req, res) => {
+    const { agentIds, command, parameters = {}, priority = 'normal' } = req.body || {};
+
+    if (!Array.isArray(agentIds) || agentIds.length === 0 || !command) {
+        throw createHttpError(400, 'BATCH_COMMAND_PAYLOAD_INVALID', 'agentIds and command are required');
     }
-});
 
-router.post('/commands/batch', authenticateToken, authorizeRole('admin', 'operator'), async (req, res) => {
-    try {
-        const { agentIds, command, parameters = {}, priority = 'normal' } = req.body || {};
+    const results = [];
 
-        if (!Array.isArray(agentIds) || agentIds.length === 0 || !command) {
-            return res.status(400).json({
+    for (const agentId of agentIds) {
+        try {
+            const agent = await getControllableAgent(req.user, agentId);
+            const commandDoc = await createCommandRecord({
+                agentId,
+                command,
+                parameters,
+                priority,
+                sentBy: req.user.username,
+            });
+
+            await dispatchIfOnline(req, agent, commandDoc);
+
+            results.push({
+                agentId,
+                success: true,
+                commandId: commandDoc.commandId,
+                status: commandDoc.status,
+            });
+        } catch (error) {
+            results.push({
+                agentId,
                 success: false,
-                error: 'Lista de Agent IDs y comando son requeridos'
+                error: error.message,
+                code: error.code || 'COMMAND_FAILED',
             });
         }
-
-        const results = [];
-
-        for (const agentId of agentIds) {
-            try {
-                const agent = await getControllableAgent(req.user, agentId);
-
-                const newCommand = await createCommandRecord({
-                    agentId,
-                    command,
-                    parameters,
-                    priority,
-                    sentBy: req.user.username
-                });
-
-                await dispatchIfOnline(req, agent, newCommand);
-
-                results.push({
-                    agentId,
-                    success: true,
-                    commandId: newCommand.commandId,
-                    status: newCommand.status
-                });
-            } catch (error) {
-                results.push({
-                    agentId,
-                    success: false,
-                    error: error.message
-                });
-            }
-        }
-
-        res.json({
-            success: true,
-            message: `Comandos enviados a ${results.filter((result) => result.success).length} de ${agentIds.length} agentes`,
-            data: { results }
-        });
-    } catch (error) {
-        console.error('Error enviando comandos batch:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Error interno del servidor'
-        });
     }
-});
 
-router.get('/commands/:commandId', authenticateToken, async (req, res) => {
-    try {
-        const { commandId } = req.params;
+    return ok(res, { results }, {
+        message: `Commands queued for ${results.filter((item) => item.success).length} of ${agentIds.length} agents`,
+    });
+}));
 
-        const command = await Command.findOne({ commandId });
-        if (!command) {
-            return res.status(404).json({
-                success: false,
-                error: 'Comando no encontrado'
-            });
-        }
-
-        if (!canControlAllAgents(req.user)) {
-            await getControllableAgent(req.user, command.agentId);
-        }
-
-        res.json({
-            success: true,
-            data: { command }
-        });
-    } catch (error) {
-        console.error('Error obteniendo comando:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Error interno del servidor'
-        });
+router.get('/commands/:commandId', authenticateToken, asyncHandler(async (req, res) => {
+    const command = await Command.findOne({ commandId: req.params.commandId });
+    if (!command) {
+        throw createHttpError(404, 'COMMAND_NOT_FOUND', 'Command not found');
     }
-});
 
-router.get('/agents/:agentId/commands', authenticateToken, async (req, res) => {
-    try {
-        const { agentId } = req.params;
-        const page = Number(req.query.page) || 1;
-        const limit = Number(req.query.limit) || 20;
-        const { status } = req.query;
-
-        await getControllableAgent(req.user, agentId);
-
-        const query = { agentId };
-        if (status) query.status = status;
-
-        const commands = await Command.find(query)
-            .sort({ createdAt: -1 })
-            .limit(limit)
-            .skip((page - 1) * limit);
-
-        const total = await Command.countDocuments(query);
-
-        res.json({
-            success: true,
-            data: {
-                commands,
-                pagination: {
-                    current: page,
-                    pages: Math.ceil(total / limit),
-                    total
-                }
-            }
-        });
-    } catch (error) {
-        console.error('Error obteniendo comandos del agente:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Error interno del servidor'
-        });
+    if (!canControlAllAgents(req.user)) {
+        await getControllableAgent(req.user, command.agentId);
     }
-});
 
-router.post('/message', authenticateToken, authorizeRole('admin', 'operator'), async (req, res) => {
-    try {
-        const { agentId, title, message, type = 'info' } = req.body || {};
+    return ok(res, { command });
+}));
 
-        if (!message) {
-            return res.status(400).json({
-                success: false,
-                error: 'Mensaje es requerido'
-            });
-        }
+router.get('/agents/:agentId/commands', authenticateToken, asyncHandler(async (req, res) => {
+    const { agentId } = req.params;
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 20;
+    const { status } = req.query;
 
-        return await handleSingleCommand(req, res, {
-            agentId,
-            command: 'send_message',
-            parameters: { title, message, type },
-            priority: 'normal'
-        });
-    } catch (error) {
-        console.error('Error enviando mensaje:', error);
-        return res.status(error.status || 500).json({
-            success: false,
-            error: error.message || 'Error interno del servidor'
-        });
+    await getControllableAgent(req.user, agentId);
+
+    const query = { agentId };
+    if (status) {
+        query.status = status;
     }
-});
+
+    const commands = await Command.find(query)
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .skip((page - 1) * limit);
+
+    const total = await Command.countDocuments(query);
+
+    return ok(res, {
+        commands,
+        pagination: {
+            current: page,
+            pages: Math.ceil(total / limit),
+            total,
+        },
+    });
+}));
+
+router.post('/message', authenticateToken, authorizeRole('admin', 'operator'), asyncHandler(async (req, res) => {
+    const { agentId, title, message, type = 'info' } = req.body || {};
+
+    if (!message) {
+        throw createHttpError(400, 'MESSAGE_REQUIRED', 'message is required');
+    }
+
+    return handleSingleCommand(req, res, {
+        agentId,
+        command: 'send_message',
+        parameters: { title, message, type },
+        priority: 'normal',
+    });
+}));
 
 module.exports = router;

@@ -22,7 +22,7 @@ function assertDiscordConfigured() {
         throw createLinkedAccountError(
             500,
             'DISCORD_NOT_CONFIGURED',
-            'Discord no esta configurado en el backend.'
+            'Discord is not configured in the backend.'
         );
     }
 
@@ -125,13 +125,13 @@ function getDiscordErrorMessage(payload, fallback) {
 }
 
 function createDiscordApiError(response, payload) {
-    const message = getDiscordErrorMessage(payload, `Discord devolvio un error ${response.status}.`);
+    const message = getDiscordErrorMessage(payload, `Discord returned error ${response.status}.`);
 
     if (response.status === 401) {
         return createLinkedAccountError(
             412,
             'REAUTH_REQUIRED',
-            'Discord necesita que vuelvas a vincular tu cuenta.',
+            'Discord needs you to link your account again.',
             payload
         );
     }
@@ -176,7 +176,7 @@ async function requestDiscordToken(params) {
             throw createLinkedAccountError(
                 412,
                 'REAUTH_REQUIRED',
-                'La vinculacion con Discord ha caducado y debe reconectarse.',
+                'The Discord link has expired and must be reconnected.',
                 payload
             );
         }
@@ -221,7 +221,7 @@ function persistDiscordTokens(user, tokenPayload, profile, options = {}) {
         throw createLinkedAccountError(
             502,
             'DISCORD_REFRESH_TOKEN_MISSING',
-            'Discord no devolvio un refresh token utilizable.'
+            'Discord did not return a usable refresh token.'
         );
     }
 
@@ -248,7 +248,7 @@ async function markDiscordReauthRequired(user, reason) {
     const discord = getMutableDiscordAccount(user);
     discord.status = 'reauth_required';
     discord.tokenExpiresAt = null;
-    discord.lastError = reason || 'Discord necesita que vuelvas a vincular la cuenta.';
+    discord.lastError = reason || 'Discord needs you to link your account again.';
     discord.credentials = undefined;
     await user.save();
     return discord;

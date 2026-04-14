@@ -1,6 +1,9 @@
 const express = require('express');
 const User = require('../models/User');
 const { authenticateToken } = require('../middleware/auth');
+const { asyncHandler } = require('../http/asyncHandler');
+const { createHttpError } = require('../http/errors');
+const { ok } = require('../http/responses');
 const {
     buildLinkedAccountCallbackUrl,
     getDefaultClientOrigin,
@@ -12,232 +15,190 @@ const {
     buildSpotifyAuthorizeUrl,
     completeSpotifyLink,
     disconnectSpotifyAccount,
+    getSpotifyStatus,
 } = require('../services/spotifyIntegration');
 const {
     buildDiscordAuthorizeUrl,
     completeDiscordLink,
     disconnectDiscordAccount,
+    getDiscordStatus,
 } = require('../services/discordIntegration');
 
 const router = express.Router();
 
-router.get('/', authenticateToken, async (req, res, next) => {
-    try {
-        res.json({
-            success: true,
-            data: {
-                user: serializeUserSummary(req.user),
-                linkedAccounts: serializeLinkedAccounts(req.user.linkedAccounts),
-            },
-        });
-    } catch (error) {
-        next(error);
-    }
-});
+const LINKED_ACCOUNT_PROVIDERS = {
+    spotify: {
+        id: 'spotify',
+        name: 'Spotify',
+        description: 'Playback controls, queue access, and reusable account auth.',
+        kind: 'oauth',
+        connectPath: '/api/v1/account/linked-accounts/spotify/connect',
+        disconnectPath: '/api/v1/account/linked-accounts/spotify',
+        buildAuthorizeUrl: buildSpotifyAuthorizeUrl,
+        completeLink: completeSpotifyLink,
+        disconnectAccount: disconnectSpotifyAccount,
+        getStatus: getSpotifyStatus,
+    },
+    discord: {
+        id: 'discord',
+        name: 'Discord',
+        description: 'Community presence, guild widgets, and reusable identity data.',
+        kind: 'oauth',
+        connectPath: '/api/v1/account/linked-accounts/discord/connect',
+        disconnectPath: '/api/v1/account/linked-accounts/discord',
+        buildAuthorizeUrl: buildDiscordAuthorizeUrl,
+        completeLink: completeDiscordLink,
+        disconnectAccount: disconnectDiscordAccount,
+        getStatus: getDiscordStatus,
+    },
+};
 
-router.post('/linked-accounts/spotify/connect', authenticateToken, async (req, res, next) => {
-    try {
-        const sessionId = req.auth?.sessionId;
-        if (!sessionId) {
-            throw Object.assign(new Error('La sesion actual no es valida para vincular Spotify.'), {
-                status: 401,
-                code: 'SESSION_REQUIRED',
-            });
+function requireSessionId(sessionId, provider) {
+    if (sessionId) {
+        return sessionId;
+    }
+
+    throw createHttpError(401, 'SESSION_REQUIRED', `The current session cannot link ${provider}.`);
+}
+
+function getProviderDefinition(providerId) {
+    const provider = LINKED_ACCOUNT_PROVIDERS[String(providerId || '').trim().toLowerCase()];
+    if (!provider) {
+        throw createHttpError(404, 'LINKED_ACCOUNT_PROVIDER_NOT_FOUND', 'The linked-account provider was not found.');
+    }
+
+    return provider;
+}
+
+async function listProviderSummaries(user) {
+    const legacyAccounts = serializeLinkedAccounts(user.linkedAccounts);
+    const providers = [];
+
+    for (const provider of Object.values(LINKED_ACCOUNT_PROVIDERS)) {
+        const rawAccount = user?.linkedAccounts?.[provider.id] || {};
+        const fallback = legacyAccounts[provider.id] || {
+            status: 'disconnected',
+            connectedAt: null,
+            tokenExpiresAt: null,
+            scopes: [],
+            lastError: null,
+        };
+
+        let available = true;
+        let liveStatus = fallback;
+
+        if (typeof provider.getStatus === 'function') {
+            try {
+                liveStatus = await provider.getStatus(user);
+            } catch (error) {
+                available = false;
+                liveStatus = {
+                    ...fallback,
+                    lastError: fallback.lastError || error.message || null,
+                };
+            }
         }
 
-        const authorizeUrl = buildSpotifyAuthorizeUrl(req.user, sessionId, req);
-        res.json({
-            success: true,
-            data: {
-                authorizeUrl,
-            },
+        providers.push({
+            id: provider.id,
+            name: provider.name,
+            description: provider.description,
+            kind: provider.kind,
+            status: liveStatus.status || 'disconnected',
+            profile: liveStatus.profile || rawAccount.profile || null,
+            connectedAt: liveStatus.connectedAt || null,
+            tokenExpiresAt: liveStatus.tokenExpiresAt || rawAccount.tokenExpiresAt || null,
+            scopes: Array.isArray(liveStatus.scopes) ? liveStatus.scopes : [],
+            lastError: liveStatus.lastError || null,
+            available,
+            connectSupported: available && typeof provider.buildAuthorizeUrl === 'function',
+            disconnectSupported: typeof provider.disconnectAccount === 'function',
+            connectPath: provider.connectPath,
+            disconnectPath: provider.disconnectPath,
         });
-    } catch (error) {
-        next(error);
     }
-});
 
-router.delete('/linked-accounts/spotify', authenticateToken, async (req, res, next) => {
-    try {
-        const spotify = await disconnectSpotifyAccount(req.user);
-        res.json({
-            success: true,
-            message: 'Cuenta de Spotify desvinculada.',
-            data: {
-                spotify,
-            },
-        });
-    } catch (error) {
-        next(error);
-    }
-});
+    return providers;
+}
 
-router.get('/linked-accounts/spotify/callback', async (req, res) => {
+async function buildLinkedAccountPayload(user) {
+    return {
+        user: serializeUserSummary(user),
+        linkedAccounts: serializeLinkedAccounts(user.linkedAccounts),
+        providers: await listProviderSummaries(user),
+    };
+}
+
+router.get('/', authenticateToken, asyncHandler(async (req, res) => {
+    return ok(res, await buildLinkedAccountPayload(req.user));
+}));
+
+router.get('/providers', authenticateToken, asyncHandler(async (req, res) => {
+    return ok(res, {
+        providers: await listProviderSummaries(req.user),
+    });
+}));
+
+router.post('/linked-accounts/:provider/connect', authenticateToken, asyncHandler(async (req, res) => {
+    const provider = getProviderDefinition(req.params.provider);
+    const sessionId = requireSessionId(req.auth?.sessionId, provider.name);
+    const authorizeUrl = provider.buildAuthorizeUrl(req.user, sessionId, req);
+    return ok(res, { authorizeUrl });
+}));
+
+router.delete('/linked-accounts/:provider', authenticateToken, asyncHandler(async (req, res) => {
+    const provider = getProviderDefinition(req.params.provider);
+    const account = await provider.disconnectAccount(req.user);
+    return ok(res, { [provider.id]: account }, { message: `${provider.name} account disconnected.` });
+}));
+
+router.get('/linked-accounts/:provider/callback', async (req, res) => {
+    const providerId = String(req.params.provider || '').trim().toLowerCase();
     let callbackOrigin = getDefaultClientOrigin();
 
     try {
+        const definition = getProviderDefinition(providerId);
         const statePayload = verifyLinkedAccountState(req.query.state);
         callbackOrigin = statePayload?.returnOrigin || callbackOrigin;
 
-        if (statePayload?.provider !== 'spotify') {
-            throw Object.assign(new Error('El proveedor indicado no es valido para este callback.'), {
-                status: 400,
-                code: 'LINKED_ACCOUNT_PROVIDER_INVALID',
-            });
+        if (statePayload?.provider !== providerId) {
+            throw createHttpError(400, 'LINKED_ACCOUNT_PROVIDER_INVALID', `The callback provider is invalid for ${definition.name}.`);
         }
 
         if (req.query.error) {
-            throw Object.assign(new Error('La autorizacion con Spotify fue cancelada.'), {
-                status: 400,
-                code: 'SPOTIFY_AUTH_DENIED',
+            throw createHttpError(400, `${providerId.toUpperCase()}_AUTH_DENIED`, `${definition.name} authorization was cancelled.`, {
                 details: { error: req.query.error },
             });
         }
 
         const code = String(req.query.code || '').trim();
         if (!code) {
-            throw Object.assign(new Error('Spotify no devolvio un codigo de autorizacion.'), {
-                status: 400,
-                code: 'SPOTIFY_CODE_MISSING',
-            });
+            throw createHttpError(400, `${providerId.toUpperCase()}_CODE_MISSING`, `${definition.name} did not return an authorization code.`);
         }
 
         const user = await User.findById(statePayload.userId);
         if (!user || !user.isActive) {
-            throw Object.assign(new Error('La sesion del usuario ya no esta disponible.'), {
-                status: 401,
-                code: 'LINKED_ACCOUNT_SESSION_INVALID',
-            });
+            throw createHttpError(401, 'LINKED_ACCOUNT_SESSION_INVALID', 'The user session is no longer available.');
         }
 
         if (!user.hasSession(statePayload.sessionId)) {
-            throw Object.assign(new Error('La sesion ya no esta activa. Inicia sesion otra vez antes de vincular Spotify.'), {
-                status: 401,
-                code: 'LINKED_ACCOUNT_SESSION_INVALID',
-            });
+            throw createHttpError(401, 'LINKED_ACCOUNT_SESSION_INVALID', `The session is no longer active. Sign in again before linking ${definition.name}.`);
         }
 
-        await completeSpotifyLink(user, code);
+        await definition.completeLink(user, code);
 
-        return res.redirect(
-            buildLinkedAccountCallbackUrl({
-                origin: callbackOrigin,
-                provider: 'spotify',
-                status: 'success',
-            })
-        );
+        return res.redirect(buildLinkedAccountCallbackUrl({
+            origin: callbackOrigin,
+            provider: providerId,
+            status: 'success',
+        }));
     } catch (error) {
-        return res.redirect(
-            buildLinkedAccountCallbackUrl({
-                origin: callbackOrigin,
-                provider: 'spotify',
-                status: 'error',
-                error: error.message || 'No se pudo completar la vinculacion con Spotify.',
-            })
-        );
-    }
-});
-
-router.post('/linked-accounts/discord/connect', authenticateToken, async (req, res, next) => {
-    try {
-        const sessionId = req.auth?.sessionId;
-        if (!sessionId) {
-            throw Object.assign(new Error('La sesion actual no es valida para vincular Discord.'), {
-                status: 401,
-                code: 'SESSION_REQUIRED',
-            });
-        }
-
-        const authorizeUrl = buildDiscordAuthorizeUrl(req.user, sessionId, req);
-        res.json({
-            success: true,
-            data: {
-                authorizeUrl,
-            },
-        });
-    } catch (error) {
-        next(error);
-    }
-});
-
-router.delete('/linked-accounts/discord', authenticateToken, async (req, res, next) => {
-    try {
-        const discord = await disconnectDiscordAccount(req.user);
-        res.json({
-            success: true,
-            message: 'Cuenta de Discord desvinculada.',
-            data: {
-                discord,
-            },
-        });
-    } catch (error) {
-        next(error);
-    }
-});
-
-router.get('/linked-accounts/discord/callback', async (req, res) => {
-    let callbackOrigin = getDefaultClientOrigin();
-
-    try {
-        const statePayload = verifyLinkedAccountState(req.query.state);
-        callbackOrigin = statePayload?.returnOrigin || callbackOrigin;
-
-        if (statePayload?.provider !== 'discord') {
-            throw Object.assign(new Error('El proveedor indicado no es valido para este callback.'), {
-                status: 400,
-                code: 'LINKED_ACCOUNT_PROVIDER_INVALID',
-            });
-        }
-
-        if (req.query.error) {
-            throw Object.assign(new Error('La autorizacion con Discord fue cancelada.'), {
-                status: 400,
-                code: 'DISCORD_AUTH_DENIED',
-                details: { error: req.query.error },
-            });
-        }
-
-        const code = String(req.query.code || '').trim();
-        if (!code) {
-            throw Object.assign(new Error('Discord no devolvio un codigo de autorizacion.'), {
-                status: 400,
-                code: 'DISCORD_CODE_MISSING',
-            });
-        }
-
-        const user = await User.findById(statePayload.userId);
-        if (!user || !user.isActive) {
-            throw Object.assign(new Error('La sesion del usuario ya no esta disponible.'), {
-                status: 401,
-                code: 'LINKED_ACCOUNT_SESSION_INVALID',
-            });
-        }
-
-        if (!user.hasSession(statePayload.sessionId)) {
-            throw Object.assign(new Error('La sesion ya no esta activa. Inicia sesion otra vez antes de vincular Discord.'), {
-                status: 401,
-                code: 'LINKED_ACCOUNT_SESSION_INVALID',
-            });
-        }
-
-        await completeDiscordLink(user, code);
-
-        return res.redirect(
-            buildLinkedAccountCallbackUrl({
-                origin: callbackOrigin,
-                provider: 'discord',
-                status: 'success',
-            })
-        );
-    } catch (error) {
-        return res.redirect(
-            buildLinkedAccountCallbackUrl({
-                origin: callbackOrigin,
-                provider: 'discord',
-                status: 'error',
-                error: error.message || 'No se pudo completar la vinculacion con Discord.',
-            })
-        );
+        return res.redirect(buildLinkedAccountCallbackUrl({
+            origin: callbackOrigin,
+            provider: providerId,
+            status: 'error',
+            error: error.message || 'The provider could not be linked.',
+        }));
     }
 });
 

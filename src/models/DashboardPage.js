@@ -7,14 +7,32 @@ const ModuleSizeSchema = new mongoose.Schema({
 }, { _id: false });
 
 const ModuleMetaSchema = new mongoose.Schema({
-    id: { type: String, required: true, trim: true }, // identificador del módulo (del catálogo del front)
+    id: { type: String, required: true, trim: true }, // identificador del modulo (del catalogo del front)
     name: { type: String, required: true, trim: true },
     description: { type: String, trim: true },
     category: { type: String, trim: true },
     size: { type: ModuleSizeSchema },
     entry: { type: String, required: true, trim: true },
     configSchema: { type: String, trim: true },
-    preview: { type: String, trim: true }
+    preview: { type: String, trim: true },
+    audience: {
+        type: String,
+        enum: ['all', 'dashboard', 'client', 'ops'],
+        default: 'dashboard'
+    },
+    requiredProviders: {
+        type: [String],
+        default: []
+    },
+    requiredRole: {
+        type: String,
+        enum: ['viewer', 'user', 'operator', 'admin', null],
+        default: null
+    },
+    capabilities: {
+        type: [String],
+        default: []
+    }
 }, { _id: false });
 
 const PositionSchema = new mongoose.Schema({
@@ -24,7 +42,7 @@ const PositionSchema = new mongoose.Schema({
     h: { type: Number, default: 1 }
 }, { _id: false });
 
-// Cada instancia de módulo DEBE tener _id para poder actualizar/eliminar por instancia
+// Cada instancia de modulo DEBE tener _id para poder actualizar/eliminar por instancia
 const InstalledModuleSchema = new mongoose.Schema({
     meta: { type: ModuleMetaSchema, required: true },
     config: { type: mongoose.Schema.Types.Mixed, default: {} },
@@ -34,7 +52,7 @@ const InstalledModuleSchema = new mongoose.Schema({
 const DashboardPageSchema = new mongoose.Schema({
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     name: { type: String, required: true, trim: true },
-    slug: { type: String, required: true, trim: true }, // único por usuario
+    slug: { type: String, required: true, trim: true }, // unico por usuario
     description: { type: String, trim: true },
     style: { type: mongoose.Schema.Types.Mixed, default: {} },
     active: { type: Boolean, default: false },
@@ -43,7 +61,7 @@ const DashboardPageSchema = new mongoose.Schema({
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
-// Índices
+// Indices
 DashboardPageSchema.index({ user: 1, slug: 1 }, { unique: true });
 DashboardPageSchema.index({ user: 1, order: 1 });
 

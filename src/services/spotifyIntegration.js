@@ -26,7 +26,7 @@ function assertSpotifyConfigured() {
         throw createLinkedAccountError(
             500,
             'SPOTIFY_NOT_CONFIGURED',
-            'Spotify no esta configurado en el backend.'
+            'Spotify is not configured in the backend.'
         );
     }
 
@@ -121,7 +121,7 @@ function getSpotifyErrorMessage(payload, fallback) {
 }
 
 function createSpotifyApiError(response, payload) {
-    const message = getSpotifyErrorMessage(payload, `Spotify devolvio un error ${response.status}.`);
+    const message = getSpotifyErrorMessage(payload, `Spotify returned error ${response.status}.`);
     const retryAfter = response.headers.get('retry-after');
 
     if (response.status === 429) {
@@ -141,7 +141,7 @@ function createSpotifyApiError(response, payload) {
         return createLinkedAccountError(
             409,
             'SPOTIFY_PREMIUM_REQUIRED',
-            'Spotify requiere una cuenta Premium para realizar esta accion.',
+            'Spotify requires a Premium account for this action.',
             payload
         );
     }
@@ -153,7 +153,7 @@ function createSpotifyApiError(response, payload) {
         return createLinkedAccountError(
             409,
             'SPOTIFY_NO_ACTIVE_DEVICE',
-            'No hay un dispositivo activo de Spotify para controlar.',
+            'There is no active Spotify device available to control.',
             payload
         );
     }
@@ -165,7 +165,7 @@ function createSpotifyApiError(response, payload) {
         return createLinkedAccountError(
             409,
             'SPOTIFY_CONTROL_NOT_ALLOWED',
-            'Spotify no permite controlar la reproduccion en el estado actual.',
+            'Spotify does not allow playback control in the current state.',
             payload
         );
     }
@@ -174,7 +174,7 @@ function createSpotifyApiError(response, payload) {
         return createLinkedAccountError(
             412,
             'REAUTH_REQUIRED',
-            'Spotify necesita que vuelvas a vincular tu cuenta.',
+            'Spotify needs you to link your account again.',
             payload
         );
     }
@@ -217,7 +217,7 @@ async function requestSpotifyToken(params) {
             throw createLinkedAccountError(
                 412,
                 'REAUTH_REQUIRED',
-                'La vinculacion con Spotify ha caducado y debe reconectarse.',
+                'The Spotify link has expired and must be reconnected.',
                 payload
             );
         }
@@ -262,7 +262,7 @@ function persistSpotifyTokens(user, tokenPayload, profile, options = {}) {
         throw createLinkedAccountError(
             502,
             'SPOTIFY_REFRESH_TOKEN_MISSING',
-            'Spotify no devolvio un refresh token utilizable.'
+            'Spotify did not return a usable refresh token.'
         );
     }
 
@@ -289,7 +289,7 @@ async function markSpotifyReauthRequired(user, reason) {
     const spotify = getMutableSpotifyAccount(user);
     spotify.status = 'reauth_required';
     spotify.tokenExpiresAt = null;
-    spotify.lastError = reason || 'Spotify necesita que vuelvas a vincular la cuenta.';
+    spotify.lastError = reason || 'Spotify needs you to link your account again.';
     spotify.credentials = undefined;
     await user.save();
     return spotify;
@@ -301,7 +301,7 @@ function assertSpotifyLinked(user) {
         throw createLinkedAccountError(
             412,
             'LINKED_ACCOUNT_REQUIRED',
-            'Vincula tu cuenta de Spotify desde Account para usar esta integracion.'
+            'Link your Spotify account from Account to use this integration.'
         );
     }
 
@@ -309,7 +309,7 @@ function assertSpotifyLinked(user) {
         throw createLinkedAccountError(
             412,
             'REAUTH_REQUIRED',
-            'Spotify necesita que vuelvas a vincular la cuenta.'
+            'Spotify needs you to link your account again.'
         );
     }
 
@@ -323,13 +323,13 @@ async function refreshSpotifyAccessToken(user) {
     if (!credentials?.refreshToken) {
         await markSpotifyReauthRequired(
             user,
-            'La vinculacion de Spotify no tiene un refresh token valido.'
+            'The Spotify link does not have a valid refresh token.'
         );
 
         throw createLinkedAccountError(
             412,
             'REAUTH_REQUIRED',
-            'Spotify necesita que vuelvas a vincular la cuenta.'
+            'Spotify needs you to link your account again.'
         );
     }
 

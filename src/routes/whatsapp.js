@@ -6,6 +6,8 @@ const {
     fetchConversations,
     fetchMessages,
 } = require('../services/whatsapp/client');
+const { asyncHandler } = require('../http/asyncHandler');
+const { ok } = require('../http/responses');
 
 const router = express.Router();
 
@@ -15,40 +17,22 @@ function parseLimit(value, fallback) {
     return Math.min(num, 50);
 }
 
-function sendError(res, error) {
-    const status = error?.status ?? (error?.code === 'CLIENT_NOT_READY' ? 409 : 500);
-    const message = error?.message ?? 'Error interno del servidor';
-    res.status(status).json({ success: false, error: message });
-}
+router.get('/status', authenticateToken, asyncHandler(async (req, res) => {
+    await ensureClient(req.user);
+    return ok(res, getStatus(req.user));
+}));
 
-router.get('/status', authenticateToken, async (req, res) => {
-    try {
-        await ensureClient(req.user);
-        res.json({ success: true, data: getStatus(req.user) });
-    } catch (error) {
-        sendError(res, error);
-    }
-});
+router.get('/conversations', authenticateToken, asyncHandler(async (req, res) => {
+    const limit = parseLimit(req.query.limit, 8);
+    const includeGroups = req.query.includeGroups !== 'false';
+    const data = await fetchConversations(req.user, limit, { includeGroups });
+    return ok(res, data);
+}));
 
-router.get('/conversations', authenticateToken, async (req, res) => {
-    try {
-        const limit = parseLimit(req.query.limit, 8);
-        const includeGroups = req.query.includeGroups !== 'false';
-        const data = await fetchConversations(req.user, limit, { includeGroups });
-        res.json({ success: true, data });
-    } catch (error) {
-        sendError(res, error);
-    }
-});
-
-router.get('/conversations/:chatId/messages', authenticateToken, async (req, res) => {
-    try {
-        const limit = parseLimit(req.query.limit, 20);
-        const data = await fetchMessages(req.user, req.params.chatId, limit);
-        res.json({ success: true, data });
-    } catch (error) {
-        sendError(res, error);
-    }
-});
+router.get('/conversations/:chatId/messages', authenticateToken, asyncHandler(async (req, res) => {
+    const limit = parseLimit(req.query.limit, 20);
+    const data = await fetchMessages(req.user, req.params.chatId, limit);
+    return ok(res, data);
+}));
 
 module.exports = router;

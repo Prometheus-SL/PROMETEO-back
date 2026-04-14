@@ -2,6 +2,7 @@ const http = require('http');
 const { randomBytes } = require('crypto');
 const { Server } = require('socket.io');
 const app = require('./app');
+const { createSocketCorsOptions, getCorsSettings } = require('./config/cors');
 const connectDB = require('./config/database');
 const Agent = require('./models/Agent');
 const AgentData = require('./models/AgentData');
@@ -13,48 +14,12 @@ const PORT = process.env.PORT || 3000;
 connectDB();
 
 const server = http.createServer(app);
-
-const parseOrigins = (value) => {
-    if (!value) return ['http://localhost:3001'];
-    return value
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean);
-};
-
-const allowedOrigins = parseOrigins(process.env.CORS_ORIGINS || process.env.CLIENT_URL);
-const allowCredentials = String(process.env.CORS_CREDENTIALS).toLowerCase() === 'true';
-
-function isOriginAllowed(origin) {
-    if (!origin) return true;
-    if (allowedOrigins.includes(origin)) return true;
-
-    return allowedOrigins.some((value) => {
-        if (!value.startsWith('/') || !value.endsWith('/')) {
-            return false;
-        }
-
-        try {
-            return new RegExp(value.slice(1, -1)).test(origin);
-        } catch (_error) {
-            return false;
-        }
-    });
-}
+const { allowedOrigins, allowCredentials } = getCorsSettings();
 
 const io = new Server(server, {
     pingTimeout: Number(process.env.SOCKET_PING_TIMEOUT || 60000),
     pingInterval: Number(process.env.SOCKET_PING_INTERVAL || 25000),
-    cors: {
-        origin: (origin, callback) => {
-            if (isOriginAllowed(origin)) {
-                return callback(null, true);
-            }
-            return callback(new Error('Origen no permitido por CORS'));
-        },
-        credentials: allowCredentials,
-        methods: ['GET', 'POST']
-    }
+    cors: createSocketCorsOptions(),
 });
 
 const agentState = {

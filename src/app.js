@@ -5,78 +5,33 @@ const morgan = require('morgan');
 const compression = require('compression');
 require('dotenv').config();
 
+const { createExpressCorsOptions } = require('./config/cors');
+const { ok } = require('./http/responses');
+
 const app = express();
 
-// Si estamos detrás de un proxy (Traefik/Nginx), habilitar trust proxy si se indica
 if (process.env.TRUST_PROXY === 'true') {
     app.set('trust proxy', 1);
 }
 
-// Middleware de seguridad
 app.use(helmet());
-
-// Middleware de compresión
 app.use(compression());
-
-// Middleware de logs
 app.use(morgan('combined'));
 
-// Utilidad para leer lista de orígenes permitidos (coma) o regex entre /.../
-const parseOrigins = (value) => {
-    if (!value) return ['http://localhost:3001'];
-    return value
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean);
-};
-
-const allowedOrigins = parseOrigins(process.env.CORS_ORIGINS || process.env.CLIENT_URL);
-const allowCredentials = String(process.env.CORS_CREDENTIALS).toLowerCase() === 'true';
-
-const isOriginAllowed = (origin) => {
-    if (!origin) return true; // permitir herramientas/no navegador y same-origin
-    if (allowedOrigins.includes(origin)) return true;
-    // Soportar patrones regex escritos como /regex/
-    return allowedOrigins.some(o => {
-        if (o.startsWith('/') && o.endsWith('/')) {
-            try {
-                const re = new RegExp(o.slice(1, -1));
-                return re.test(origin);
-            } catch (_) {
-                return false;
-            }
-        }
-        return false;
-    });
-};
-
-const corsOptions = {
-    origin: (origin, callback) => callback(null, isOriginAllowed(origin)),
-    credentials: allowCredentials,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    // allowedHeaders undefined => se reflejan los enviados en Access-Control-Request-Headers
-    optionsSuccessStatus: 204,
-    preflightContinue: false
-};
-
-// Middleware de CORS (colocado pronto para que el preflight no lo bloquee nada)
+const corsOptions = createExpressCorsOptions();
 app.use(cors(corsOptions));
 app.options('/{*any}', cors(corsOptions));
 
-// Middleware para parsear JSON
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
-// Ruta básica de salud
-app.get('/health', (req, res) => {
-    res.status(200).json({
-        status: 'OK',
-        message: 'Servidor PROMETEO funcionando correctamente',
-        timestamp: new Date().toISOString()
-    });
-});
+app.get('/health', (_req, res) => ok(res, {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+}, {
+    message: 'PROMETEO server is healthy',
+}));
 
-// Importar rutas y middleware
 const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');
 const accountRoutes = require('./routes/account');
@@ -87,10 +42,8 @@ const spotifyRoutes = require('./routes/spotify');
 const whatsappRoutes = require('./routes/whatsapp');
 const discordRoutes = require('./routes/discord');
 
-// Middleware de logging personalizado
 app.use(customLogger);
 
-// Configurar rutas
 app.use('/api/v1', apiRoutes);
 app.use('/api/v1/account', accountRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
@@ -100,25 +53,18 @@ app.use('/api/v1/discord', discordRoutes);
 app.use('/auth', authRoutes);
 app.use('/control', controlRoutes);
 
-// Ruta de bienvenida
-app.get('/', (req, res) => {
-    res.json({
-        message: 'Bienvenido al Backend de PROMETEO',
-        version: '1.0.0',
-        endpoints: {
-            health: '/health',
-            api: '/api/v1',
-            websocket: 'ws://localhost:' + (process.env.PORT || 3000)
-        }
-    });
-});
+app.get('/', (_req, res) => ok(res, {
+    version: '1.0.0',
+    endpoints: {
+        health: '/health',
+        api: '/api/v1',
+        websocket: 'ws://localhost:' + (process.env.PORT || 3000),
+    },
+}, {
+    message: 'Welcome to the PROMETEO backend',
+}));
 
 app.use(notFoundHandler);
-
-// Middleware de manejo de errores (debe ir al final)
 app.use(errorHandler);
 
 module.exports = app;
-
-
-

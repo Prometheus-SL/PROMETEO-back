@@ -1,361 +1,379 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const { authenticateToken, authorizeRole } = require('../middleware/auth');
+const Agent = require('../models/Agent');
+const AgentData = require('../models/AgentData');
 const DashboardPage = require('../models/DashboardPage');
+const { asyncHandler } = require('../http/asyncHandler');
+const { created, ok } = require('../http/responses');
+const { createHttpError } = require('../http/errors');
+const { serializeLinkedAccounts } = require('../services/linkedAccounts');
 
 const router = express.Router();
 
-// Helpers
-const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
+function sortDateLikeDesc(items, fields) {
+    return [...items].sort((left, right) => {
+        for (const field of fields) {
+            const leftValue = left?.[field] ? new Date(left[field]).getTime() : 0;
+            const rightValue = right?.[field] ? new Date(right[field]).getTime() : 0;
+            if (leftValue !== rightValue) {
+                return rightValue - leftValue;
+            }
+        }
 
-// GET /api/v1/dashboard/pages -> List pages for the authenticated user
-router.get('/pages', authenticateToken, async (req, res) => {
-    try {
-        const pages = await DashboardPage.find({ user: req.user._id }).sort({ order: 1, createdAt: 1 });
-        res.json({ success: true, data: { pages } });
-    } catch (error) {
-        console.error('Error listing pages:', error);
-        res.status(500).json({ success: false, error: 'Internal server error' });
+        return 0;
+    });
+}
+
+async function resolveSortedResults(queryLike, sortSpec, limit) {
+    if (queryLike && typeof queryLike.sort === 'function' && !Array.isArray(queryLike)) {
+        const sortedQuery = queryLike.sort(sortSpec);
+        if (typeof limit === 'number' && typeof sortedQuery?.limit === 'function') {
+            return sortedQuery.limit(limit);
+        }
+
+        return sortedQuery;
     }
-});
 
-// GET /api/v1/dashboard/pages/summary -> List lightweight page metadata
-router.get('/pages/summary', authenticateToken, async (req, res) => {
-    try {
-        const pages = await DashboardPage.find({ user: req.user._id })
-            .select('_id name slug active order')
-            .sort({ order: 1, createdAt: 1 })
-            .lean();
-        res.json({ success: true, data: { pages } });
-    } catch (error) {
-        console.error('Error listing page summaries:', error);
-        res.status(500).json({ success: false, error: 'Internal server error' });
+    const resolved = await queryLike;
+    if (!Array.isArray(resolved)) {
+        return resolved;
     }
-});
 
-// GET /api/v1/dashboard/pages/active -> Get the active page for the user
-router.get('/pages/active', authenticateToken, async (req, res) => {
-    try {
-        const page = await DashboardPage.findOne({ user: req.user._id, active: true }).sort({ updatedAt: -1 });
-        res.json({ success: true, data: { page } });
-    } catch (error) {
-        console.error('Error fetching active page:', error);
-        res.status(500).json({ success: false, error: 'Internal server error' });
+    const ordered = sortDateLikeDesc(resolved, Object.keys(sortSpec || {}));
+    return typeof limit === 'number' ? ordered.slice(0, limit) : ordered;
+}
+
+function buildFeedAgentScope(req) {
+    if (req.user.role === 'admin' || req.user.role === 'operator') {
+        return {};
     }
-});
 
-// GET /api/v1/dashboard/pages/by-slug/:slug -> Get a page by slug
-router.get('/pages/by-slug/:slug', authenticateToken, async (req, res) => {
-    try {
-        const { slug } = req.params;
-        const page = await DashboardPage.findOne({ user: req.user._id, slug });
-        if (!page) return res.status(404).json({ success: false, error: 'Page not found' });
-        res.json({ success: true, data: { page } });
-    } catch (error) {
-        console.error('Error fetching page by slug:', error);
-        res.status(500).json({ success: false, error: 'Internal server error' });
+    return { user: req.user._id };
+}
+
+function buildLinkedAccountFeedItems(user) {
+    const linkedAccounts = serializeLinkedAccounts(user.linkedAccounts);
+
+    return Object.entries(linkedAccounts)
+        .filter(([, account]) => account?.status && account.status !== 'connected')
+        .map(([provider, account]) => ({
+            id: `linked-account:${provider}`,
+            type: 'linked-account',
+            provider,
+            status: account.status,
+            createdAt: account.connectedAt || null,
+            title: `${provider} requires attention`,
+            message: account.lastError || `Reconnect ${provider} to restore all module capabilities.`,
+        }));
+}
+
+function summarizeAgentEvent(entry, agent) {
+    const cpuPercent = entry?.data?.resources?.cpu?.percent;
+    const hostname = entry?.data?.system?.hostname || agent?.name || entry?.agentId;
+    const cpuLabel = Number.isFinite(Number(cpuPercent)) ? `CPU ${Number(cpuPercent)}%` : 'New telemetry available';
+
+    return {
+        id: `agent-data:${entry._id || `${entry.agentId}:${entry.createdAt}`}`,
+        type: 'agent-data',
+        agentId: entry.agentId,
+        agentName: agent?.name || entry.agentId,
+        dataType: entry.dataType,
+        createdAt: entry.createdAt || null,
+        title: `${hostname} reported ${entry.dataType}`,
+        message: cpuLabel,
+        payload: entry.data || {},
+    };
+}
+
+function assertValidId(id, message = 'Invalid id') {
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw createHttpError(400, 'INVALID_ID', message);
     }
-});
+}
 
-// POST /api/v1/dashboard/pages -> Create a new page
-router.post('/pages', authenticateToken, async (req, res) => {
-    try {
-        const { name, slug, description, style = {}, active = false } = req.body || {};
-        if (!name && !slug) {
-            return res.status(400).json({ success: false, error: 'name or slug is required' });
-        }
-
-        const last = await DashboardPage.findOne({ user: req.user._id }).sort({ order: -1 });
-        const order = last ? (last.order + 1) : 0;
-
-        const page = new DashboardPage({
-            user: req.user._id,
-            name: name || slug,
-            slug,
-            description,
-            style,
-            active,
-            order,
-            updatedBy: req.user._id,
-        });
-        await page.save();
-
-        if (page.active) {
-            await DashboardPage.updateMany(
-                { user: req.user._id, _id: { $ne: page._id } },
-                { $set: { active: false } }
-            );
-        }
-
-        res.status(201).json({ success: true, message: 'Page created', data: { page } });
-    } catch (error) {
-        console.error('Error creating page:', error);
-        if (error.code === 11000) {
-            return res.status(409).json({ success: false, error: 'Slug already exists for this user' });
-        }
-        if (error.name === 'ValidationError') {
-            const details = Object.values(error.errors).map((e) => e.message);
-            return res.status(400).json({ success: false, error: 'Validation error', details });
-        }
-        res.status(500).json({ success: false, error: 'Internal server error' });
+async function findOwnedPage(pageId, userId) {
+    const page = await DashboardPage.findOne({ _id: pageId, user: userId });
+    if (!page) {
+        throw createHttpError(404, 'PAGE_NOT_FOUND', 'Page not found');
     }
-});
 
-// GET /api/v1/dashboard/pages/:id -> Get a page by id
-router.get('/pages/:id', authenticateToken, async (req, res) => {
-    try {
-        const { id } = req.params;
-        if (!isValidId(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
-        const page = await DashboardPage.findOne({ _id: id, user: req.user._id });
-        if (!page) return res.status(404).json({ success: false, error: 'Page not found' });
-        res.json({ success: true, data: { page } });
-    } catch (error) {
-        console.error('Error fetching page:', error);
-        res.status(500).json({ success: false, error: 'Internal server error' });
-    }
-});
+    return page;
+}
 
-// PATCH /api/v1/dashboard/pages/:id -> Update page metadata
-router.patch('/pages/:id', authenticateToken, async (req, res) => {
-    try {
-        const { id } = req.params;
-        if (!isValidId(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
+router.get('/pages', authenticateToken, asyncHandler(async (req, res) => {
+    const pages = await DashboardPage.find({ user: req.user._id }).sort({ order: 1, createdAt: 1 });
+    return ok(res, { pages });
+}));
 
-        const allowed = ['name', 'slug', 'description', 'style', 'active'];
-        const updates = {};
-        for (const key of allowed) {
-            if (req.body[key] !== undefined) updates[key] = req.body[key];
-        }
-        updates.updatedBy = req.user._id;
+router.get('/pages/summary', authenticateToken, asyncHandler(async (req, res) => {
+    const pages = await DashboardPage.find({ user: req.user._id })
+        .select('_id name slug active order')
+        .sort({ order: 1, createdAt: 1 })
+        .lean();
 
-        const page = await DashboardPage.findOneAndUpdate(
-            { _id: id, user: req.user._id },
-            { $set: updates },
-            { new: true, runValidators: true }
-        );
-        if (!page) return res.status(404).json({ success: false, error: 'Page not found' });
+    return ok(res, { pages });
+}));
 
-        if (updates.active === true) {
-            await DashboardPage.updateMany(
-                { user: req.user._id, _id: { $ne: page._id } },
-                { $set: { active: false } }
-            );
-        }
+router.get('/pages/active', authenticateToken, asyncHandler(async (req, res) => {
+    const page = await DashboardPage.findOne({ user: req.user._id, active: true }).sort({ updatedAt: -1 });
+    return ok(res, { page });
+}));
 
-        res.json({ success: true, message: 'Page updated', data: { page } });
-    } catch (error) {
-        console.error('Error updating page:', error);
-        if (error.code === 11000) {
-            return res.status(409).json({ success: false, error: 'Slug already exists for this user' });
-        }
-        if (error.name === 'ValidationError') {
-            const details = Object.values(error.errors).map((e) => e.message);
-            return res.status(400).json({ success: false, error: 'Validation error', details });
-        }
-        res.status(500).json({ success: false, error: 'Internal server error' });
-    }
-});
+router.get('/feed', authenticateToken, asyncHandler(async (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 50);
+    const linkedAccountItems = buildLinkedAccountFeedItems(req.user);
+    const agents = await resolveSortedResults(Agent.find(buildFeedAgentScope(req)), { lastSeen: -1, createdAt: -1 });
+    const agentIds = Array.isArray(agents) ? agents.map((agent) => agent.agentId).filter(Boolean) : [];
+    const agentMap = new Map((Array.isArray(agents) ? agents : []).map((agent) => [agent.agentId, agent]));
 
-// DELETE /api/v1/dashboard/pages/:id -> Delete a page
-router.delete('/pages/:id', authenticateToken, async (req, res) => {
-    try {
-        const { id } = req.params;
-        if (!isValidId(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
-        const deleted = await DashboardPage.findOneAndDelete({ _id: id, user: req.user._id });
-        if (!deleted) return res.status(404).json({ success: false, error: 'Page not found' });
-        res.json({ success: true, message: 'Page deleted' });
-    } catch (error) {
-        console.error('Error deleting page:', error);
-        res.status(500).json({ success: false, error: 'Internal server error' });
-    }
-});
-
-// PATCH /api/v1/dashboard/pages/reorder -> Reorder pages [{id, order}]
-router.patch('/pages/reorder', authenticateToken, async (req, res) => {
-    try {
-        const { items } = req.body || {};
-        if (!Array.isArray(items) || items.length === 0) {
-            return res.status(400).json({ success: false, error: 'items must be an array with {id, order}' });
-        }
-
-        const bulk = items
-            .filter((item) => isValidId(item.id))
-            .map((item) => ({
-                updateOne: {
-                    filter: { _id: item.id, user: req.user._id },
-                    update: { $set: { order: item.order } },
-                },
-            }));
-
-        if (bulk.length === 0) {
-            return res.status(400).json({ success: false, error: 'No valid items provided' });
-        }
-
-        await DashboardPage.bulkWrite(bulk);
-        const pages = await DashboardPage.find({ user: req.user._id }).sort({ order: 1, createdAt: 1 });
-        res.json({ success: true, message: 'Order updated', data: { pages } });
-    } catch (error) {
-        console.error('Error reordering pages:', error);
-        res.status(500).json({ success: false, error: 'Internal server error' });
-    }
-});
-
-// ================= Modules within a page =================
-
-// POST /api/v1/dashboard/pages/:id/modules -> Add a module
-router.post('/pages/:id/modules', authenticateToken, async (req, res) => {
-    try {
-        const { id } = req.params;
-        if (!isValidId(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
-        const { meta, config = {}, position } = req.body || {};
-        if (!meta || !meta.id || !meta.name || !meta.entry) {
-            return res.status(400).json({ success: false, error: 'Required module meta: {id, name, entry}' });
-        }
-
-        const page = await DashboardPage.findOne({ _id: id, user: req.user._id });
-        if (!page) return res.status(404).json({ success: false, error: 'Page not found' });
-
-        page.modules.push({ meta, config, position });
-        page.updatedBy = req.user._id;
-        await page.save();
-
-        const moduleInstance = page.modules[page.modules.length - 1];
-        res.status(201).json({ success: true, message: 'Module added', data: { page, module: moduleInstance } });
-    } catch (error) {
-        console.error('Error adding module:', error);
-        if (error.name === 'ValidationError') {
-            const details = Object.values(error.errors).map((e) => e.message);
-            return res.status(400).json({ success: false, error: 'Validation error', details });
-        }
-        res.status(500).json({ success: false, error: 'Internal server error' });
-    }
-});
-
-// PATCH /api/v1/dashboard/pages/:id/modules/:moduleId -> Update a module instance
-router.patch('/pages/:id/modules/:moduleId', authenticateToken, async (req, res) => {
-    try {
-        const { id, moduleId } = req.params;
-        if (!isValidId(id) || !isValidId(moduleId)) {
-            return res.status(400).json({ success: false, error: 'Invalid id' });
-        }
-
-        const { meta, config, position } = req.body || {};
-        const page = await DashboardPage.findOne({ _id: id, user: req.user._id });
-        if (!page) return res.status(404).json({ success: false, error: 'Page not found' });
-
-        const mod = page.modules.id(moduleId);
-        if (!mod) return res.status(404).json({ success: false, error: 'Module not found' });
-
-        if (meta !== undefined) mod.meta = meta;
-        if (config !== undefined) mod.config = config;
-        if (position !== undefined) mod.position = position;
-
-        page.updatedBy = req.user._id;
-        await page.save();
-        res.json({ success: true, message: 'Module updated', data: { page, module: mod } });
-    } catch (error) {
-        console.error('Error updating module:', error);
-        if (error.name === 'ValidationError') {
-            const details = Object.values(error.errors).map((e) => e.message);
-            return res.status(400).json({ success: false, error: 'Validation error', details });
-        }
-        res.status(500).json({ success: false, error: 'Internal server error' });
-    }
-});
-
-// DELETE /api/v1/dashboard/pages/:id/modules/:moduleId -> Delete a module instance
-router.delete('/pages/:id/modules/:moduleId', authenticateToken, async (req, res) => {
-    try {
-        const { id, moduleId } = req.params;
-        if (!isValidId(id) || !isValidId(moduleId)) {
-            return res.status(400).json({ success: false, error: 'Invalid id' });
-        }
-
-        const page = await DashboardPage.findOne({ _id: id, user: req.user._id });
-        if (!page) return res.status(404).json({ success: false, error: 'Page not found' });
-
-        const mod = page.modules.id(moduleId);
-        if (!mod) return res.status(404).json({ success: false, error: 'Module not found' });
-
-        mod.deleteOne();
-        page.updatedBy = req.user._id;
-        await page.save();
-        res.json({ success: true, message: 'Module deleted', data: { page } });
-    } catch (error) {
-        console.error('Error deleting module:', error);
-        res.status(500).json({ success: false, error: 'Internal server error' });
-    }
-});
-
-// PATCH /api/v1/dashboard/pages/:id/modules/reorder -> Update module positions in bulk
-router.patch('/pages/:id/modules/reorder', authenticateToken, async (req, res) => {
-    try {
-        const { id } = req.params;
-        if (!isValidId(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
-
-        const { positions } = req.body || {};
-        if (!Array.isArray(positions)) {
-            return res.status(400).json({ success: false, error: 'positions must be an array [{moduleId, position}]' });
-        }
-
-        const page = await DashboardPage.findOne({ _id: id, user: req.user._id });
-        if (!page) return res.status(404).json({ success: false, error: 'Page not found' });
-
-        const map = new Map(positions.map((position) => [String(position.moduleId), position.position]));
-        page.modules.forEach((module) => {
-            const nextPosition = map.get(String(module._id));
-            if (nextPosition) module.position = nextPosition;
-        });
-
-        page.updatedBy = req.user._id;
-        await page.save();
-        res.json({ success: true, message: 'Positions updated', data: { page } });
-    } catch (error) {
-        console.error('Error reordering modules:', error);
-        res.status(500).json({ success: false, error: 'Internal server error' });
-    }
-});
-
-// ================= Admin: manage pages for another user =================
-
-// List pages by user id
-router.get('/admin/users/:userId/pages', authenticateToken, authorizeRole('admin'), async (req, res) => {
-    try {
-        const { userId } = req.params;
-        if (!isValidId(userId)) {
-            return res.status(400).json({ success: false, error: 'Invalid user id' });
-        }
-
-        const pages = await DashboardPage.find({ user: userId }).sort({ order: 1, createdAt: 1 });
-        res.json({ success: true, data: { pages } });
-    } catch (error) {
-        console.error('Error listing admin pages:', error);
-        res.status(500).json({ success: false, error: 'Internal server error' });
-    }
-});
-
-// Replace the global page style (admin or owner)
-router.put('/pages/:id/style', authenticateToken, async (req, res) => {
-    try {
-        const { id } = req.params;
-        if (!isValidId(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
-
-        const { style = {} } = req.body || {};
-        const filter = { _id: id };
-        if (req.user.role !== 'admin') filter.user = req.user._id;
-
-        const page = await DashboardPage.findOneAndUpdate(
-            filter,
-            { $set: { style, updatedBy: req.user._id } },
-            { new: true }
+    let agentItems = [];
+    if (agentIds.length > 0) {
+        const recentAgentData = await resolveSortedResults(
+            AgentData.find({ agentId: { $in: agentIds } }),
+            { createdAt: -1 },
+            limit
         );
 
-        if (!page) return res.status(404).json({ success: false, error: 'Page not found' });
-        res.json({ success: true, message: 'Style updated', data: { page } });
-    } catch (error) {
-        console.error('Error updating style:', error);
-        res.status(500).json({ success: false, error: 'Internal server error' });
+        agentItems = (Array.isArray(recentAgentData) ? recentAgentData : [])
+            .map((entry) => summarizeAgentEvent(entry, agentMap.get(entry.agentId)));
     }
-});
+
+    const items = [...linkedAccountItems, ...agentItems].slice(0, limit);
+
+    return ok(res, {
+        items,
+        summary: {
+            total: items.length,
+            linkedAccounts: linkedAccountItems.length,
+            agentEvents: agentItems.length,
+        },
+    });
+}));
+
+router.get('/pages/by-slug/:slug', authenticateToken, asyncHandler(async (req, res) => {
+    const page = await DashboardPage.findOne({ user: req.user._id, slug: req.params.slug });
+    if (!page) {
+        throw createHttpError(404, 'PAGE_NOT_FOUND', 'Page not found');
+    }
+
+    return ok(res, { page });
+}));
+
+router.post('/pages', authenticateToken, asyncHandler(async (req, res) => {
+    const { name, slug, description, style = {}, active = false } = req.body || {};
+    if (!name && !slug) {
+        throw createHttpError(400, 'PAGE_NAME_OR_SLUG_REQUIRED', 'name or slug is required');
+    }
+
+    const last = await DashboardPage.findOne({ user: req.user._id }).sort({ order: -1 });
+    const order = last ? (last.order + 1) : 0;
+
+    const page = new DashboardPage({
+        user: req.user._id,
+        name: name || slug,
+        slug,
+        description,
+        style,
+        active,
+        order,
+        updatedBy: req.user._id,
+    });
+    await page.save();
+
+    if (page.active) {
+        await DashboardPage.updateMany(
+            { user: req.user._id, _id: { $ne: page._id } },
+            { $set: { active: false } }
+        );
+    }
+
+    return created(res, { page }, { message: 'Page created' });
+}));
+
+router.get('/pages/:id', authenticateToken, asyncHandler(async (req, res) => {
+    assertValidId(req.params.id);
+    const page = await DashboardPage.findOne({ _id: req.params.id, user: req.user._id });
+    if (!page) {
+        throw createHttpError(404, 'PAGE_NOT_FOUND', 'Page not found');
+    }
+
+    return ok(res, { page });
+}));
+
+router.patch('/pages/:id', authenticateToken, asyncHandler(async (req, res) => {
+    assertValidId(req.params.id);
+
+    const allowed = ['name', 'slug', 'description', 'style', 'active'];
+    const updates = {};
+    for (const key of allowed) {
+        if (req.body[key] !== undefined) {
+            updates[key] = req.body[key];
+        }
+    }
+    updates.updatedBy = req.user._id;
+
+    const page = await DashboardPage.findOneAndUpdate(
+        { _id: req.params.id, user: req.user._id },
+        { $set: updates },
+        { new: true, runValidators: true }
+    );
+    if (!page) {
+        throw createHttpError(404, 'PAGE_NOT_FOUND', 'Page not found');
+    }
+
+    if (updates.active === true) {
+        await DashboardPage.updateMany(
+            { user: req.user._id, _id: { $ne: page._id } },
+            { $set: { active: false } }
+        );
+    }
+
+    return ok(res, { page }, { message: 'Page updated' });
+}));
+
+router.delete('/pages/:id', authenticateToken, asyncHandler(async (req, res) => {
+    assertValidId(req.params.id);
+
+    const deleted = await DashboardPage.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    if (!deleted) {
+        throw createHttpError(404, 'PAGE_NOT_FOUND', 'Page not found');
+    }
+
+    return ok(res, null, { message: 'Page deleted' });
+}));
+
+router.patch('/pages/reorder', authenticateToken, asyncHandler(async (req, res) => {
+    const { items } = req.body || {};
+    if (!Array.isArray(items) || items.length === 0) {
+        throw createHttpError(400, 'PAGE_REORDER_ITEMS_REQUIRED', 'items must be an array with {id, order}');
+    }
+
+    const bulk = items
+        .filter((item) => mongoose.Types.ObjectId.isValid(item.id))
+        .map((item) => ({
+            updateOne: {
+                filter: { _id: item.id, user: req.user._id },
+                update: { $set: { order: item.order } },
+            },
+        }));
+
+    if (bulk.length === 0) {
+        throw createHttpError(400, 'PAGE_REORDER_ITEMS_INVALID', 'No valid items provided');
+    }
+
+    await DashboardPage.bulkWrite(bulk);
+    const pages = await DashboardPage.find({ user: req.user._id }).sort({ order: 1, createdAt: 1 });
+    return ok(res, { pages }, { message: 'Order updated' });
+}));
+
+router.post('/pages/:id/modules', authenticateToken, asyncHandler(async (req, res) => {
+    assertValidId(req.params.id);
+    const { meta, config = {}, position } = req.body || {};
+
+    if (!meta || !meta.id || !meta.name || !meta.entry) {
+        throw createHttpError(400, 'MODULE_META_REQUIRED', 'Required module meta: {id, name, entry}');
+    }
+
+    const page = await findOwnedPage(req.params.id, req.user._id);
+    page.modules.push({ meta, config, position });
+    page.updatedBy = req.user._id;
+    await page.save();
+
+    const moduleInstance = page.modules[page.modules.length - 1];
+    return created(res, { page, module: moduleInstance }, { message: 'Module added' });
+}));
+
+router.patch('/pages/:id/modules/:moduleId', authenticateToken, asyncHandler(async (req, res) => {
+    assertValidId(req.params.id);
+    assertValidId(req.params.moduleId);
+
+    const { meta, config, position } = req.body || {};
+    const page = await findOwnedPage(req.params.id, req.user._id);
+    const moduleInstance = page.modules.id(req.params.moduleId);
+
+    if (!moduleInstance) {
+        throw createHttpError(404, 'MODULE_NOT_FOUND', 'Module not found');
+    }
+
+    if (meta !== undefined) moduleInstance.meta = meta;
+    if (config !== undefined) moduleInstance.config = config;
+    if (position !== undefined) moduleInstance.position = position;
+
+    page.updatedBy = req.user._id;
+    await page.save();
+
+    return ok(res, { page, module: moduleInstance }, { message: 'Module updated' });
+}));
+
+router.delete('/pages/:id/modules/:moduleId', authenticateToken, asyncHandler(async (req, res) => {
+    assertValidId(req.params.id);
+    assertValidId(req.params.moduleId);
+
+    const page = await findOwnedPage(req.params.id, req.user._id);
+    const moduleInstance = page.modules.id(req.params.moduleId);
+
+    if (!moduleInstance) {
+        throw createHttpError(404, 'MODULE_NOT_FOUND', 'Module not found');
+    }
+
+    moduleInstance.deleteOne();
+    page.updatedBy = req.user._id;
+    await page.save();
+
+    return ok(res, { page }, { message: 'Module deleted' });
+}));
+
+router.patch('/pages/:id/modules/reorder', authenticateToken, asyncHandler(async (req, res) => {
+    assertValidId(req.params.id);
+
+    const { positions } = req.body || {};
+    if (!Array.isArray(positions)) {
+        throw createHttpError(400, 'MODULE_POSITIONS_REQUIRED', 'positions must be an array [{moduleId, position}]');
+    }
+
+    const page = await findOwnedPage(req.params.id, req.user._id);
+    const positionMap = new Map(positions.map((item) => [String(item.moduleId), item.position]));
+
+    page.modules.forEach((moduleInstance) => {
+        const nextPosition = positionMap.get(String(moduleInstance._id));
+        if (nextPosition !== undefined) {
+            moduleInstance.position = nextPosition;
+        }
+    });
+
+    page.updatedBy = req.user._id;
+    await page.save();
+
+    return ok(res, { page }, { message: 'Positions updated' });
+}));
+
+router.get('/admin/users/:userId/pages', authenticateToken, authorizeRole('admin'), asyncHandler(async (req, res) => {
+    assertValidId(req.params.userId, 'Invalid user id');
+    const pages = await DashboardPage.find({ user: req.params.userId }).sort({ order: 1, createdAt: 1 });
+    return ok(res, { pages });
+}));
+
+router.put('/pages/:id/style', authenticateToken, asyncHandler(async (req, res) => {
+    assertValidId(req.params.id);
+
+    const { style = {} } = req.body || {};
+    const filter = { _id: req.params.id };
+    if (req.user.role !== 'admin') {
+        filter.user = req.user._id;
+    }
+
+    const page = await DashboardPage.findOneAndUpdate(
+        filter,
+        { $set: { style, updatedBy: req.user._id } },
+        { new: true }
+    );
+
+    if (!page) {
+        throw createHttpError(404, 'PAGE_NOT_FOUND', 'Page not found');
+    }
+
+    return ok(res, { page }, { message: 'Style updated' });
+}));
 
 module.exports = router;

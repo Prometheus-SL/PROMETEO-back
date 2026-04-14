@@ -1,7 +1,19 @@
-const errorHandler = (err, req, res, next) => {
-    console.error('Error capturado:', err);
+const { buildErrorPayload } = require('../http/responses');
+const { createHttpError, ensureHttpError } = require('../http/errors');
 
-    if (err.headers && typeof err.headers === 'object') {
+function buildErrorMeta(req, error) {
+    return {
+        timestamp: new Date().toISOString(),
+        path: req.originalUrl,
+        method: req.method,
+        ...(process.env.NODE_ENV === 'development' && error?.stack ? { stack: error.stack } : {}),
+    };
+}
+
+const errorHandler = (err, req, res, _next) => {
+    console.error('Error captured:', err);
+
+    if (err?.headers && typeof err.headers === 'object') {
         for (const [key, value] of Object.entries(err.headers)) {
             if (value !== undefined && value !== null) {
                 res.setHeader(key, String(value));
@@ -9,40 +21,54 @@ const errorHandler = (err, req, res, next) => {
         }
     }
 
-    if (err.name === 'ValidationError') {
-        return res.status(400).json({
-            success: false,
-            error: 'Error de validacion',
-            details: err.message,
+    if (err?.code === 11000) {
+        const duplicateError = createHttpError(409, 'DUPLICATE_RESOURCE', 'Resource already exists', {
+            details: err.keyValue,
         });
+
+        return res.status(duplicateError.status).json(buildErrorPayload(duplicateError, {
+            meta: buildErrorMeta(req, duplicateError),
+        }));
     }
 
-    if (err.type === 'entity.parse.failed') {
-        return res.status(400).json({
-            success: false,
-            error: 'JSON invalido',
-            details: 'El formato del JSON enviado no es valido',
+    if (err?.name === 'ValidationError') {
+        const details = Object.values(err.errors || {}).map((item) => item.message);
+        const validationError = createHttpError(400, 'VALIDATION_ERROR', 'Validation error', {
+            details: details.length > 0 ? details : err.message,
         });
+
+        return res.status(validationError.status).json(buildErrorPayload(validationError, {
+            meta: buildErrorMeta(req, validationError),
+        }));
     }
 
-    res.status(err.status || 500).json({
-        success: false,
-        error: err.message || 'Error interno del servidor',
-        ...(err.code && { code: err.code }),
-        ...(err.details !== undefined && { details: err.details }),
-        timestamp: new Date().toISOString(),
-        ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+    if (err?.type === 'entity.parse.failed') {
+        const parseError = createHttpError(400, 'INVALID_JSON', 'Invalid JSON body', {
+            details: 'The request body could not be parsed as valid JSON.',
+        });
+
+        return res.status(parseError.status).json(buildErrorPayload(parseError, {
+            meta: buildErrorMeta(req, parseError),
+        }));
+    }
+
+    const finalError = ensureHttpError(err, {
+        status: 500,
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Internal server error',
     });
+
+    return res.status(finalError.status).json(buildErrorPayload(finalError, {
+        meta: buildErrorMeta(req, finalError),
+    }));
 };
 
 const notFoundHandler = (req, res) => {
-    res.status(404).json({
-        success: false,
-        error: 'Ruta no encontrada',
-        path: req.originalUrl,
-        method: req.method,
-        timestamp: new Date().toISOString(),
-    });
+    const error = createHttpError(404, 'ROUTE_NOT_FOUND', 'Route not found');
+
+    return res.status(error.status).json(buildErrorPayload(error, {
+        meta: buildErrorMeta(req, error),
+    }));
 };
 
 const customLogger = (req, res, next) => {

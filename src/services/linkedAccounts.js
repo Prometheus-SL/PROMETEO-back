@@ -69,7 +69,7 @@ function getEncryptionSecret() {
         throw createLinkedAccountError(
             500,
             'LINKED_ACCOUNTS_NOT_CONFIGURED',
-            'LINKED_ACCOUNTS_ENCRYPTION_KEY no esta configurado.'
+            'LINKED_ACCOUNTS_ENCRYPTION_KEY is not configured.'
         );
     }
 
@@ -104,7 +104,7 @@ function decryptLinkedAccountPayload(payload) {
         throw createLinkedAccountError(
             500,
             'LINKED_ACCOUNTS_CREDENTIALS_INVALID',
-            'Las credenciales cifradas de la cuenta vinculada no son validas.'
+            'The encrypted linked account credentials are invalid.'
         );
     }
 
@@ -126,7 +126,7 @@ function decryptLinkedAccountPayload(payload) {
         throw createLinkedAccountError(
             500,
             'LINKED_ACCOUNTS_CREDENTIALS_INVALID',
-            'No se pudieron descifrar las credenciales de la cuenta vinculada.'
+            'The linked account credentials could not be decrypted.'
         );
     }
 }
@@ -154,6 +154,7 @@ function serializeSpotifyLinkedAccount(spotify) {
         avatarUrl: profile.avatarUrl || null,
         connectedAt: spotify?.connectedAt || null,
         scopes: Array.isArray(spotify?.scopes) ? spotify.scopes : [],
+        tokenExpiresAt: spotify?.tokenExpiresAt || null,
         lastError: spotify?.lastError || null,
         product: profile.product || null,
         externalUrl: profile.externalUrl || null,
@@ -172,6 +173,7 @@ function serializeDiscordLinkedAccount(discord) {
         avatarUrl: profile.avatarUrl || null,
         connectedAt: discord?.connectedAt || null,
         scopes: Array.isArray(discord?.scopes) ? discord.scopes : [],
+        tokenExpiresAt: discord?.tokenExpiresAt || null,
         lastError: discord?.lastError || null,
         email: profile.email || null,
         verified: typeof profile.verified === 'boolean' ? profile.verified : null,
@@ -191,7 +193,7 @@ function signLinkedAccountState(payload) {
         throw createLinkedAccountError(
             500,
             'LINKED_ACCOUNT_STATE_NOT_CONFIGURED',
-            'JWT_SECRET no esta configurado para firmar el estado OAuth.'
+            'JWT_SECRET is not configured to sign the OAuth state.'
         );
     }
 
@@ -211,7 +213,7 @@ function verifyLinkedAccountState(token) {
         throw createLinkedAccountError(
             500,
             'LINKED_ACCOUNT_STATE_NOT_CONFIGURED',
-            'JWT_SECRET no esta configurado para validar el estado OAuth.'
+            'JWT_SECRET is not configured to validate the OAuth state.'
         );
     }
 
@@ -225,13 +227,13 @@ function verifyLinkedAccountState(token) {
         throw createLinkedAccountError(
             400,
             'LINKED_ACCOUNT_STATE_INVALID',
-            'El enlace de vinculacion ha caducado o no es valido.'
+            'The account linking URL has expired or is invalid.'
         );
     }
 }
 
 function sanitizeCallbackErrorMessage(error) {
-    const message = String(error || 'Se produjo un error al vincular la cuenta.');
+    const message = String(error || 'An error occurred while linking the account.');
     return message.slice(0, 180);
 }
 
