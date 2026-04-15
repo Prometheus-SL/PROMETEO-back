@@ -1,0 +1,171 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+function makeMessenger() {
+    const sends = [];
+    return {
+        async sendFreeGames(channelId, games) {
+            sends.push({ channelId, ids: games.map((g) => g.id) });
+        },
+        sends,
+    };
+}
+
+function makeChannelStore(initial = {}) {
+    const state = new Map(
+        Object.entries(initial).map(([channelId, ids]) => [channelId, new Set(ids)]),
+    );
+    return {
+        async getKnownIds(channelId) {
+            return new Set(state.get(channelId) ?? []);
+        },
+        async recordSent(channelId, _source, ids) {
+            state.set(channelId, new Set(ids));
+        },
+        _dump(channelId) {
+            return Array.from(state.get(channelId) ?? []).sort();
+        },
+    };
+}
+
+function makeUser(overrides = {}) {
+    const notifications = {
+        epicFreeGames: {
+            enabled: true,
+            channelId: 'channel-1',
+            guildId: 'guild-1',
+            lastNotifiedIds: [],
+            lastNotifiedAt: null,
+            lastError: null,
+            ...(overrides.epicFreeGames ?? {}),
+        },
+    };
+    return {
+        _id: overrides._id ?? 'user-1',
+        linkedAccounts: { discord: { notifications } },
+    };
+}
+
+const g = (id) => ({
+    id,
+    title: `Game ${id}`,
+    description: '',
+    priceOriginal: '9,99 €',
+    freeUntil: new Date('2026-04-16T15:00:00.000Z'),
+    imageUrl: 'https://cdn.example/x.jpg',
+    storeUrl: `https://store.epicgames.com/es-ES/p/${id}`,
+});
+
+test('tickUser sends only games whose ids are not in lastNotifiedIds', async () => {
+    const { tickUser } = require('../src/services/discord/newsScheduler');
+    const messenger = makeMessenger();
+
+    const user = makeUser({ epicFreeGames: { lastNotifiedIds: ['A', 'B'] } });
+    const games = [g('A'), g('C')];
+
+    const result = await tickUser(user, games, messenger);
+
+    assert.equal(messenger.sends.length, 1);
+    assert.deepEqual(messenger.sends[0].ids, ['C']);
+    assert.deepEqual(result.nextIds.sort(), ['A', 'C']);
+    assert.equal(result.error, null);
+});
+
+test('tickUser sends nothing when ids are identical', async () => {
+    const { tickUser } = require('../src/services/discord/newsScheduler');
+    const messenger = makeMessenger();
+
+    const user = makeUser({ epicFreeGames: { lastNotifiedIds: ['A', 'B'] } });
+    const games = [g('A'), g('B')];
+
+    const result = await tickUser(user, games, messenger);
+
+    assert.equal(messenger.sends.length, 0);
+    assert.deepEqual(result.nextIds.sort(), ['A', 'B']);
+    assert.equal(result.error, null);
+});
+
+test('tickUser returns error and keeps lastNotifiedIds unchanged on messenger failure', async () => {
+    const { tickUser } = require('../src/services/discord/newsScheduler');
+    const messenger = {
+        async sendFreeGames() { throw new Error('channel deleted'); },
+    };
+
+    const user = makeUser({ epicFreeGames: { lastNotifiedIds: ['A'] } });
+    const games = [g('A'), g('B')];
+
+    const result = await tickUser(user, games, messenger);
+
+    assert.equal(result.error?.message, 'channel deleted');
+    assert.deepEqual(result.nextIds, ['A'], 'ids must not advance on failure');
+});
+
+test('tickUser skips users with enabled=false', async () => {
+    const { tickUser } = require('../src/services/discord/newsScheduler');
+    const messenger = makeMessenger();
+
+    const user = makeUser({ epicFreeGames: { enabled: false, lastNotifiedIds: ['A'] } });
+    const games = [g('A'), g('B')];
+
+    const result = await tickUser(user, games, messenger);
+
+    assert.equal(messenger.sends.length, 0);
+    assert.equal(result.skipped, true);
+});
+
+test('tickUser skips users with missing channelId', async () => {
+    const { tickUser } = require('../src/services/discord/newsScheduler');
+    const messenger = makeMessenger();
+
+    const user = makeUser({ epicFreeGames: { channelId: null, lastNotifiedIds: [] } });
+    const games = [g('A')];
+
+    const result = await tickUser(user, games, messenger);
+
+    assert.equal(messenger.sends.length, 0);
+    assert.equal(result.skipped, true);
+});
+
+test('tickUser does not resend games already posted to the same channel by another user', async () => {
+    const { tickUser } = require('../src/services/discord/newsScheduler');
+    const messenger = makeMessenger();
+    const store = makeChannelStore({ 'channel-1': ['A', 'B'] });
+
+    const user = makeUser({ epicFreeGames: { lastNotifiedIds: [] } });
+    const games = [g('A'), g('B')];
+
+    const result = await tickUser(user, games, messenger, store);
+
+    assert.equal(messenger.sends.length, 0, 'no debería reenviar nada');
+    assert.deepEqual(result.nextIds.sort(), ['A', 'B'], 'el usuario queda sincronizado');
+    assert.equal(result.error, null);
+});
+
+test('tickUser only sends games not yet in the channel state', async () => {
+    const { tickUser } = require('../src/services/discord/newsScheduler');
+    const messenger = makeMessenger();
+    const store = makeChannelStore({ 'channel-1': ['A'] });
+
+    const user = makeUser({ epicFreeGames: { lastNotifiedIds: [] } });
+    const games = [g('A'), g('B')];
+
+    const result = await tickUser(user, games, messenger, store);
+
+    assert.equal(messenger.sends.length, 1);
+    assert.deepEqual(messenger.sends[0].ids, ['B'], 'solo B es nuevo para el canal');
+    assert.deepEqual(store._dump('channel-1'), ['A', 'B']);
+    assert.deepEqual(result.nextIds.sort(), ['A', 'B']);
+});
+
+test('tickUser records channel state after a successful send', async () => {
+    const { tickUser } = require('../src/services/discord/newsScheduler');
+    const messenger = makeMessenger();
+    const store = makeChannelStore();
+
+    const user = makeUser({ epicFreeGames: { lastNotifiedIds: [] } });
+    const games = [g('X'), g('Y')];
+
+    await tickUser(user, games, messenger, store);
+
+    assert.deepEqual(store._dump('channel-1'), ['X', 'Y']);
+});

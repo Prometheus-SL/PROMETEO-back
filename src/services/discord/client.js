@@ -1,8 +1,30 @@
 const { Client, GatewayIntentBits } = require('discord.js');
+const User = require('../../models/User');
+const { createEpicFreeGamesProvider } = require('./providers/epicFreeGames');
+const { createDiscordNewsMessenger } = require('./newsMessenger');
+const { createDiscordNewsScheduler } = require('./newsScheduler');
+const { createChannelStateStore } = require('./channelStateStore');
 
 let client = null;
 let ready = false;
 let initPromise = null;
+let scheduler = null;
+
+function startNewsSchedulerIfNeeded(botClient) {
+    if (scheduler) return;
+    try {
+        scheduler = createDiscordNewsScheduler({
+            User,
+            provider: createEpicFreeGamesProvider(),
+            messenger: createDiscordNewsMessenger({ client: botClient }),
+            channelStateStore: createChannelStateStore(),
+        });
+        scheduler.start();
+        console.log('[Discord] News scheduler arrancado (tick cada 1 h)');
+    } catch (err) {
+        console.error('[Discord] No se pudo arrancar el news scheduler:', err.message);
+    }
+}
 
 function getClient() {
     if (client && ready) return client;
@@ -40,12 +62,14 @@ async function initBot() {
         await new Promise((resolve, reject) => {
             if (client.isReady()) {
                 ready = true;
+                startNewsSchedulerIfNeeded(client);
                 resolve();
                 return;
             }
             client.once('ready', () => {
                 ready = true;
                 console.log(`[Discord] Bot conectado como ${client.user.tag}`);
+                startNewsSchedulerIfNeeded(client);
                 resolve();
             });
             setTimeout(() => reject(new Error('Timeout esperando al bot de Discord')), 30000);

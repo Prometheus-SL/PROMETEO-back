@@ -8,10 +8,15 @@ const Agent = require('./models/Agent');
 const AgentData = require('./models/AgentData');
 const Command = require('./models/Command');
 const { verifyAccessToken } = require('./middleware/auth');
+const { initBot: initDiscordBot } = require('./services/discord/client');
 
 const PORT = process.env.PORT || 3000;
 
 connectDB();
+
+initDiscordBot()
+    .then(() => console.log('[Discord] Bot arrancado en startup'))
+    .catch((err) => console.error('[Discord] Startup falló, se reintentará con la primera request:', err.message));
 
 const server = http.createServer(app);
 const { allowedOrigins, allowCredentials } = getCorsSettings();

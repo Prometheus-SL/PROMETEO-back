@@ -4,6 +4,7 @@ const { asyncHandler } = require('../http/asyncHandler');
 const { createHttpError } = require('../http/errors');
 const { ok } = require('../http/responses');
 const { initBot, getStatus, getGuildInfo, getInviteUrl, disconnectVoiceMember, setVoiceMute } = require('../services/discord/client');
+const notificationsService = require('../services/discord/notificationsService');
 
 const router = express.Router();
 
@@ -43,6 +44,21 @@ router.get('/invite', authenticateToken, ensureBot, asyncHandler(async (_req, re
     }
 
     return ok(res, { url });
+}));
+
+router.get('/notifications/epic', authenticateToken, ensureBot, asyncHandler(async (req, res) => {
+    const state = await notificationsService.getStatus(req.user._id);
+    return ok(res, state);
+}));
+
+router.post('/notifications/epic', authenticateToken, ensureBot, asyncHandler(async (req, res) => {
+    const { enabled, channelId, guildId } = req.body ?? {};
+    const result = await notificationsService.saveStatus(req.user._id, {
+        enabled: Boolean(enabled),
+        channelId: typeof channelId === 'string' ? channelId : null,
+        guildId: typeof guildId === 'string' ? guildId : null,
+    });
+    return ok(res, result);
 }));
 
 module.exports = router;

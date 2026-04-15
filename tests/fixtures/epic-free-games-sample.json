@@ -1,0 +1,101 @@
+{
+  "data": {
+    "Catalog": {
+      "searchStore": {
+        "elements": [
+          {
+            "id": "offer-prop-sumo-1",
+            "title": "Prop Sumo",
+            "description": "Hilarious multiplayer prop-battle game.",
+            "price": {
+              "totalPrice": {
+                "fmtPrice": {
+                  "originalPrice": "9,99 €",
+                  "discountPrice": "0"
+                },
+                "discountPrice": 0
+              }
+            },
+            "keyImages": [
+              { "type": "OfferImageWide", "url": "https://cdn.example/prop-sumo-wide.jpg" },
+              { "type": "Thumbnail", "url": "https://cdn.example/prop-sumo-thumb.jpg" }
+            ],
+            "productSlug": "prop-sumo",
+            "urlSlug": "prop-sumo",
+            "catalogNs": { "mappings": [{ "pageSlug": "prop-sumo", "pageType": "productHome" }] },
+            "offerMappings": [{ "pageSlug": "prop-sumo", "pageType": "productHome" }],
+            "promotions": {
+              "promotionalOffers": [
+                {
+                  "promotionalOffers": [
+                    {
+                      "startDate": "2026-04-10T15:00:00.000Z",
+                      "endDate": "2026-04-16T15:00:00.000Z",
+                      "discountSetting": { "discountType": "PERCENTAGE", "discountPercentage": 0 }
+                    }
+                  ]
+                }
+              ],
+              "upcomingPromotionalOffers": []
+            }
+          },
+          {
+            "id": "offer-not-free-2",
+            "title": "Premium Paid Game",
+            "description": "Not free, should be filtered out.",
+            "price": {
+              "totalPrice": {
+                "fmtPrice": {
+                  "originalPrice": "29,99 €",
+                  "discountPrice": "29,99 €"
+                },
+                "discountPrice": 2999
+              }
+            },
+            "keyImages": [],
+            "productSlug": "premium",
+            "urlSlug": "premium",
+            "catalogNs": { "mappings": [] },
+            "offerMappings": [],
+            "promotions": null
+          },
+          {
+            "id": "offer-second-free-3",
+            "title": "Second Free Game",
+            "description": "Another simultaneously-free title.",
+            "price": {
+              "totalPrice": {
+                "fmtPrice": {
+                  "originalPrice": "14,99 €",
+                  "discountPrice": "0"
+                },
+                "discountPrice": 0
+              }
+            },
+            "keyImages": [
+              { "type": "OfferImageWide", "url": "https://cdn.example/second-wide.jpg" }
+            ],
+            "productSlug": "second-free",
+            "urlSlug": "second-free",
+            "catalogNs": { "mappings": [{ "pageSlug": "second-free", "pageType": "productHome" }] },
+            "offerMappings": [{ "pageSlug": "second-free", "pageType": "productHome" }],
+            "promotions": {
+              "promotionalOffers": [
+                {
+                  "promotionalOffers": [
+                    {
+                      "startDate": "2026-04-10T15:00:00.000Z",
+                      "endDate": "2026-04-16T15:00:00.000Z",
+                      "discountSetting": { "discountType": "PERCENTAGE", "discountPercentage": 0 }
+                    }
+                  ]
+                }
+              ],
+              "upcomingPromotionalOffers": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

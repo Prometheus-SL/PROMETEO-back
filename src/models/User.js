@@ -150,6 +150,42 @@ const discordProfileSchema = new mongoose.Schema({
     },
 }, { _id: false });
 
+const discordEpicNotificationsSchema = new mongoose.Schema({
+    enabled: {
+        type: Boolean,
+        default: false,
+    },
+    channelId: {
+        type: String,
+        trim: true,
+        default: null,
+    },
+    guildId: {
+        type: String,
+        trim: true,
+        default: null,
+    },
+    lastNotifiedIds: {
+        type: [String],
+        default: [],
+    },
+    lastNotifiedAt: {
+        type: Date,
+        default: null,
+    },
+    lastError: {
+        type: String,
+        default: null,
+    },
+}, { _id: false });
+
+const discordNotificationsSchema = new mongoose.Schema({
+    epicFreeGames: {
+        type: discordEpicNotificationsSchema,
+        default: () => ({ enabled: false, lastNotifiedIds: [] }),
+    },
+}, { _id: false });
+
 const discordLinkedAccountSchema = new mongoose.Schema({
     status: {
         type: String,
@@ -179,6 +215,10 @@ const discordLinkedAccountSchema = new mongoose.Schema({
     credentials: {
         type: encryptedPayloadSchema,
         default: undefined,
+    },
+    notifications: {
+        type: discordNotificationsSchema,
+        default: () => ({ epicFreeGames: { enabled: false, lastNotifiedIds: [] } }),
     },
 }, { _id: false });
 
@@ -371,6 +411,7 @@ userSchema.methods.clearLinkedAccount = function (provider) {
             tokenExpiresAt: null,
             lastError: null,
             credentials: undefined,
+            notifications: { epicFreeGames: { enabled: false, lastNotifiedIds: [] } },
         };
     }
 
