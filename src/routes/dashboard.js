@@ -56,7 +56,10 @@ function buildLinkedAccountFeedItems(user) {
     const linkedAccounts = serializeLinkedAccounts(user.linkedAccounts);
 
     return Object.entries(linkedAccounts)
-        .filter(([, account]) => account?.status && account.status !== 'connected')
+        .filter(([, account]) => (
+            account?.status === 'reauth_required'
+            || (account?.status === 'connected' && account?.lastError)
+        ))
         .map(([provider, account]) => ({
             id: `linked-account:${provider}`,
             type: 'linked-account',

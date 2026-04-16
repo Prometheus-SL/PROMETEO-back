@@ -139,6 +139,47 @@ test('GET /api/v1/account/providers returns the provider registry with live stat
                     verified: null,
                 }),
             },
+            'src/services/googleIntegration.js': {
+                buildGoogleAuthorizeUrl: () => '',
+                completeGoogleLink: async () => null,
+                disconnectGoogleAccount: async () => null,
+                getGoogleStatus: async () => ({
+                    status: 'connected',
+                    profile: {
+                        email: 'mike@gmail.com',
+                        displayName: 'Mike Workspace',
+                    },
+                    connectedAt: '2026-04-14T12:00:00.000Z',
+                    scopes: ['calendar.readonly', 'gmail.readonly'],
+                    lastError: null,
+                }),
+            },
+            'src/services/githubIntegration.js': {
+                buildGithubAuthorizeUrl: () => '',
+                completeGithubLink: async () => null,
+                disconnectGithubAccount: async () => null,
+                getGithubStatus: async () => ({
+                    status: 'connected',
+                    profile: {
+                        login: 'mike',
+                        displayName: 'Mike on GitHub',
+                    },
+                    connectedAt: '2026-04-14T12:00:00.000Z',
+                    scopes: ['notifications', 'repo'],
+                    lastError: null,
+                }),
+            },
+            'src/services/creatorIntegration.js': {
+                getCreatorStatus: async () => ({
+                    status: 'connected',
+                    profile: {
+                        displayName: 'Prometeo Creator',
+                    },
+                    connectedAt: '2026-04-14T12:00:00.000Z',
+                    scopes: [],
+                    lastError: null,
+                }),
+            },
         },
     });
     t.after(cleanup);
@@ -147,8 +188,12 @@ test('GET /api/v1/account/providers returns the provider registry with live stat
 
     assert.equal(response.status, 200);
     assert.equal(response.body.success, true);
-    assert.equal(response.body.data.providers.length, 2);
+    assert.equal(response.body.data.providers.length, 5);
     assert.equal(response.body.data.providers[0].id, 'spotify');
     assert.equal(response.body.data.providers[0].status, 'connected');
     assert.equal(response.body.data.providers[1].id, 'discord');
+    assert.equal(response.body.data.providers[2].id, 'google');
+    assert.equal(response.body.data.providers[3].id, 'github');
+    assert.equal(response.body.data.providers[4].id, 'creator');
+    assert.equal(response.body.data.providers[4].connectSupported, false);
 });

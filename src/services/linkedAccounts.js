@@ -180,10 +180,25 @@ function serializeDiscordLinkedAccount(discord) {
     };
 }
 
+function serializeGenericLinkedAccount(account) {
+    const profile = account?.profile || {};
+
+    return {
+        status: account?.status || 'disconnected',
+        profile: Object.keys(profile).length > 0 ? profile : null,
+        connectedAt: account?.connectedAt || null,
+        scopes: Array.isArray(account?.scopes) ? account.scopes : [],
+        tokenExpiresAt: account?.tokenExpiresAt || null,
+        lastError: account?.lastError || null,
+    };
+}
+
 function serializeLinkedAccounts(linkedAccounts) {
     return {
         spotify: serializeSpotifyLinkedAccount(linkedAccounts?.spotify),
         discord: serializeDiscordLinkedAccount(linkedAccounts?.discord),
+        google: serializeGenericLinkedAccount(linkedAccounts?.google),
+        github: serializeGenericLinkedAccount(linkedAccounts?.github),
     };
 }
 
@@ -257,6 +272,7 @@ module.exports = {
     normalizeOrigin,
     resolveReturnOrigin,
     serializeDiscordLinkedAccount,
+    serializeGenericLinkedAccount,
     serializeLinkedAccounts,
     serializeSpotifyLinkedAccount,
     serializeUserSummary,

@@ -23,6 +23,21 @@ const {
     disconnectDiscordAccount,
     getDiscordStatus,
 } = require('../services/discordIntegration');
+const {
+    buildGoogleAuthorizeUrl,
+    completeGoogleLink,
+    disconnectGoogleAccount,
+    getGoogleStatus,
+} = require('../services/googleIntegration');
+const {
+    buildGithubAuthorizeUrl,
+    completeGithubLink,
+    disconnectGithubAccount,
+    getGithubStatus,
+} = require('../services/githubIntegration');
+const {
+    getCreatorStatus,
+} = require('../services/creatorIntegration');
 
 const router = express.Router();
 
@@ -50,6 +65,39 @@ const LINKED_ACCOUNT_PROVIDERS = {
         completeLink: completeDiscordLink,
         disconnectAccount: disconnectDiscordAccount,
         getStatus: getDiscordStatus,
+    },
+    google: {
+        id: 'google',
+        name: 'Google Workspace',
+        description: 'Calendar agenda, Tasks planning, Gmail summaries, and focus hints.',
+        kind: 'oauth',
+        connectPath: '/api/v1/account/linked-accounts/google/connect',
+        disconnectPath: '/api/v1/account/linked-accounts/google',
+        buildAuthorizeUrl: buildGoogleAuthorizeUrl,
+        completeLink: completeGoogleLink,
+        disconnectAccount: disconnectGoogleAccount,
+        getStatus: getGoogleStatus,
+    },
+    github: {
+        id: 'github',
+        name: 'GitHub',
+        description: 'Pull request pulse, notifications, and engineering activity.',
+        kind: 'oauth',
+        connectPath: '/api/v1/account/linked-accounts/github/connect',
+        disconnectPath: '/api/v1/account/linked-accounts/github',
+        buildAuthorizeUrl: buildGithubAuthorizeUrl,
+        completeLink: completeGithubLink,
+        disconnectAccount: disconnectGithubAccount,
+        getStatus: getGithubStatus,
+    },
+    creator: {
+        id: 'creator',
+        name: 'Creator Status',
+        description: 'Live state across creator channels like YouTube and Twitch.',
+        kind: 'internal',
+        connectPath: '/api/v1/account/linked-accounts/creator/connect',
+        disconnectPath: '/api/v1/account/linked-accounts/creator',
+        getStatus: getCreatorStatus,
     },
 };
 
@@ -141,6 +189,9 @@ router.get('/providers', authenticateToken, asyncHandler(async (req, res) => {
 
 router.post('/linked-accounts/:provider/connect', authenticateToken, asyncHandler(async (req, res) => {
     const provider = getProviderDefinition(req.params.provider);
+    if (typeof provider.buildAuthorizeUrl !== 'function') {
+        throw createHttpError(405, 'LINKED_ACCOUNT_CONNECT_UNSUPPORTED', `${provider.name} cannot be linked from this route.`);
+    }
     const sessionId = requireSessionId(req.auth?.sessionId, provider.name);
     const authorizeUrl = provider.buildAuthorizeUrl(req.user, sessionId, req);
     return ok(res, { authorizeUrl });
@@ -148,6 +199,9 @@ router.post('/linked-accounts/:provider/connect', authenticateToken, asyncHandle
 
 router.delete('/linked-accounts/:provider', authenticateToken, asyncHandler(async (req, res) => {
     const provider = getProviderDefinition(req.params.provider);
+    if (typeof provider.disconnectAccount !== 'function') {
+        throw createHttpError(405, 'LINKED_ACCOUNT_DISCONNECT_UNSUPPORTED', `${provider.name} cannot be disconnected from this route.`);
+    }
     const account = await provider.disconnectAccount(req.user);
     return ok(res, { [provider.id]: account }, { message: `${provider.name} account disconnected.` });
 }));
@@ -174,6 +228,9 @@ router.get('/linked-accounts/:provider/callback', async (req, res) => {
         const code = String(req.query.code || '').trim();
         if (!code) {
             throw createHttpError(400, `${providerId.toUpperCase()}_CODE_MISSING`, `${definition.name} did not return an authorization code.`);
+        }
+        if (typeof definition.completeLink !== 'function') {
+            throw createHttpError(405, 'LINKED_ACCOUNT_CALLBACK_UNSUPPORTED', `${definition.name} does not support OAuth callbacks.`);
         }
 
         const user = await User.findById(statePayload.userId);

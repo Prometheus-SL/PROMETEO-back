@@ -222,6 +222,122 @@ const discordLinkedAccountSchema = new mongoose.Schema({
     },
 }, { _id: false });
 
+const googleProfileSchema = new mongoose.Schema({
+    id: {
+        type: String,
+        trim: true,
+    },
+    email: {
+        type: String,
+        trim: true,
+        lowercase: true,
+    },
+    displayName: {
+        type: String,
+        trim: true,
+    },
+    avatarUrl: {
+        type: String,
+        trim: true,
+    },
+    locale: {
+        type: String,
+        trim: true,
+    },
+}, { _id: false });
+
+const googleLinkedAccountSchema = new mongoose.Schema({
+    status: {
+        type: String,
+        enum: ['disconnected', 'connected', 'reauth_required'],
+        default: 'disconnected',
+    },
+    profile: {
+        type: googleProfileSchema,
+        default: undefined,
+    },
+    scopes: {
+        type: [String],
+        default: [],
+    },
+    connectedAt: {
+        type: Date,
+        default: null,
+    },
+    tokenExpiresAt: {
+        type: Date,
+        default: null,
+    },
+    lastError: {
+        type: String,
+        default: null,
+    },
+    credentials: {
+        type: encryptedPayloadSchema,
+        default: undefined,
+    },
+}, { _id: false });
+
+const githubProfileSchema = new mongoose.Schema({
+    id: {
+        type: String,
+        trim: true,
+    },
+    login: {
+        type: String,
+        trim: true,
+    },
+    displayName: {
+        type: String,
+        trim: true,
+    },
+    email: {
+        type: String,
+        trim: true,
+        lowercase: true,
+    },
+    avatarUrl: {
+        type: String,
+        trim: true,
+    },
+    htmlUrl: {
+        type: String,
+        trim: true,
+    },
+}, { _id: false });
+
+const githubLinkedAccountSchema = new mongoose.Schema({
+    status: {
+        type: String,
+        enum: ['disconnected', 'connected', 'reauth_required'],
+        default: 'disconnected',
+    },
+    profile: {
+        type: githubProfileSchema,
+        default: undefined,
+    },
+    scopes: {
+        type: [String],
+        default: [],
+    },
+    connectedAt: {
+        type: Date,
+        default: null,
+    },
+    tokenExpiresAt: {
+        type: Date,
+        default: null,
+    },
+    lastError: {
+        type: String,
+        default: null,
+    },
+    credentials: {
+        type: encryptedPayloadSchema,
+        default: undefined,
+    },
+}, { _id: false });
+
 const linkedAccountsSchema = new mongoose.Schema({
     spotify: {
         type: spotifyLinkedAccountSchema,
@@ -229,6 +345,14 @@ const linkedAccountsSchema = new mongoose.Schema({
     },
     discord: {
         type: discordLinkedAccountSchema,
+        default: () => ({ status: 'disconnected', scopes: [] }),
+    },
+    google: {
+        type: googleLinkedAccountSchema,
+        default: () => ({ status: 'disconnected', scopes: [] }),
+    },
+    github: {
+        type: githubLinkedAccountSchema,
         default: () => ({ status: 'disconnected', scopes: [] }),
     },
 }, { _id: false });
@@ -415,6 +539,32 @@ userSchema.methods.clearLinkedAccount = function (provider) {
         };
     }
 
+    if (provider === 'google') {
+        this.linkedAccounts = this.linkedAccounts || {};
+        this.linkedAccounts.google = {
+            status: 'disconnected',
+            profile: undefined,
+            scopes: [],
+            connectedAt: null,
+            tokenExpiresAt: null,
+            lastError: null,
+            credentials: undefined,
+        };
+    }
+
+    if (provider === 'github') {
+        this.linkedAccounts = this.linkedAccounts || {};
+        this.linkedAccounts.github = {
+            status: 'disconnected',
+            profile: undefined,
+            scopes: [],
+            connectedAt: null,
+            tokenExpiresAt: null,
+            lastError: null,
+            credentials: undefined,
+        };
+    }
+
     return this;
 };
 
@@ -428,6 +578,12 @@ userSchema.methods.toJSON = function () {
     }
     if (user.linkedAccounts?.discord) {
         delete user.linkedAccounts.discord.credentials;
+    }
+    if (user.linkedAccounts?.google) {
+        delete user.linkedAccounts.google.credentials;
+    }
+    if (user.linkedAccounts?.github) {
+        delete user.linkedAccounts.github.credentials;
     }
     delete user.linkedAccounts;
     return user;
