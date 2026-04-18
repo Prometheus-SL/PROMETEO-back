@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, PermissionsBitField } = require('discord.js');
 const User = require('../../models/User');
 const { createEpicFreeGamesProvider } = require('./providers/epicFreeGames');
 const { createDiscordNewsMessenger } = require('./newsMessenger');
@@ -303,4 +303,49 @@ async function setVoiceMute(guildId, userId, mute) {
     return { id: member.id, name: member.displayName, muted: Boolean(mute) };
 }
 
-module.exports = { initBot, getClient, getStatus, getGuildInfo, getInviteUrl, disconnectVoiceMember, setVoiceMute };
+async function getMemberPermissions(guildId, discordUserId) {
+    if (!discordUserId) {
+        return { isAdmin: false, isOwner: false, hasLinkedDiscord: false };
+    }
+
+    const bot = getClient();
+    if (!bot) throw Object.assign(new Error('Bot no conectado'), { code: 'BOT_NOT_READY' });
+
+    let guild = bot.guilds.cache.get(guildId);
+    if (!guild) throw Object.assign(new Error('El bot no está en ese servidor'), { status: 404 });
+
+    try {
+        guild = await guild.fetch();
+    } catch (_err) {
+        // Fall back to cached guild; ownerId may be slightly stale but acceptable for this check.
+    }
+
+    let member;
+    try {
+        member = await guild.members.fetch({ user: discordUserId });
+    } catch (_err) {
+        return { isAdmin: false, isOwner: false, hasLinkedDiscord: true };
+    }
+
+    const isOwner = member.id === guild.ownerId;
+    const isAdmin = Boolean(member.permissions?.has?.(PermissionsBitField.Flags.Administrator));
+
+    return { isAdmin, isOwner, hasLinkedDiscord: true };
+}
+
+function __setClientForTests(fakeClient) {
+    client = fakeClient;
+    ready = Boolean(fakeClient);
+}
+
+module.exports = {
+    initBot,
+    getClient,
+    getStatus,
+    getGuildInfo,
+    getInviteUrl,
+    disconnectVoiceMember,
+    setVoiceMute,
+    getMemberPermissions,
+    __setClientForTests,
+};

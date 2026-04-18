@@ -4,8 +4,8 @@ const request = require('supertest');
 
 const { createRouteApp } = require('./helpers/routeApp');
 
-function buildMocks({ user }) {
-    const state = { user, savedBody: null };
+function buildMocks({ initialConfigs = [] } = {}) {
+    const state = { configs: initialConfigs.slice(), savedBody: null };
     return {
         state,
         mocks: {
@@ -20,30 +20,18 @@ function buildMocks({ user }) {
             },
             'src/services/discord/notificationsService.js': {
                 async getStatus() {
-                    return {
-                        enabled: state.user.linkedAccounts.discord.notifications.epicFreeGames.enabled,
-                        channelId: state.user.linkedAccounts.discord.notifications.epicFreeGames.channelId,
-                        guildId: state.user.linkedAccounts.discord.notifications.epicFreeGames.guildId,
+                    return { configs: state.configs };
+                },
+                async saveStatus(_userId, configs) {
+                    state.savedBody = configs;
+                    state.configs = configs.map((c) => ({
+                        guildId: c.guildId,
+                        channelId: c.channelId ?? null,
+                        enabled: Boolean(c.enabled),
                         lastNotifiedAt: null,
                         lastError: null,
-                    };
-                },
-                async saveStatus(_userId, body) {
-                    state.savedBody = body;
-                    state.user.linkedAccounts.discord.notifications.epicFreeGames = {
-                        ...state.user.linkedAccounts.discord.notifications.epicFreeGames,
-                        ...body,
-                    };
-                    return {
-                        state: {
-                            enabled: body.enabled,
-                            channelId: body.channelId ?? null,
-                            guildId: body.guildId ?? null,
-                            lastNotifiedAt: null,
-                            lastError: null,
-                        },
-                        warning: null,
-                    };
+                    }));
+                    return { configs: state.configs, warning: null };
                 },
             },
             'src/services/discord/client.js': {
@@ -55,24 +43,15 @@ function buildMocks({ user }) {
                 async setVoiceMute() { return {}; },
                 getClient() { return {}; },
             },
-        },
-    };
-}
-
-function makeUser() {
-    return {
-        linkedAccounts: {
-            discord: {
-                notifications: {
-                    epicFreeGames: { enabled: false, channelId: null, guildId: null, lastNotifiedIds: [] },
-                },
+            'src/services/discord/userGuildsService.js': {
+                async getUserAdminGuilds() { return { needsLink: false, needsReauth: false, guilds: [] }; },
             },
         },
     };
 }
 
 test('GET /api/v1/discord/notifications/epic returns current state', async (t) => {
-    const { mocks } = buildMocks({ user: makeUser() });
+    const { mocks } = buildMocks();
     const { app, cleanup } = createRouteApp({
         routePath: 'src/routes/discord.js',
         mountPath: '/api/v1/discord',
@@ -83,11 +62,39 @@ test('GET /api/v1/discord/notifications/epic returns current state', async (t) =
     const response = await request(app).get('/api/v1/discord/notifications/epic');
     assert.equal(response.status, 200);
     assert.equal(response.body.success, true);
-    assert.equal(response.body.data.enabled, false);
+    assert.deepEqual(response.body.data.configs, []);
 });
 
-test('POST /api/v1/discord/notifications/epic saves state', async (t) => {
-    const { mocks, state } = buildMocks({ user: makeUser() });
+test('POST /api/v1/discord/notifications/epic saves multi-server configs', async (t) => {
+    const { mocks, state } = buildMocks();
+    const { app, cleanup } = createRouteApp({
+        routePath: 'src/routes/discord.js',
+        mountPath: '/api/v1/discord',
+        mocks,
+    });
+    t.after(cleanup);
+
+    const body = {
+        configs: [
+            { guildId: 'guild-1', channelId: 'ch-1', enabled: true },
+            { guildId: 'guild-2', channelId: 'ch-2', enabled: false },
+        ],
+    };
+    const response = await request(app)
+        .post('/api/v1/discord/notifications/epic')
+        .send(body);
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.success, true);
+    assert.equal(response.body.data.configs.length, 2);
+    assert.deepEqual(state.savedBody, [
+        { guildId: 'guild-1', channelId: 'ch-1', enabled: true },
+        { guildId: 'guild-2', channelId: 'ch-2', enabled: false },
+    ]);
+});
+
+test('POST /api/v1/discord/notifications/epic rejects non-array body', async (t) => {
+    const { mocks } = buildMocks();
     const { app, cleanup } = createRouteApp({
         routePath: 'src/routes/discord.js',
         mountPath: '/api/v1/discord',
@@ -97,32 +104,28 @@ test('POST /api/v1/discord/notifications/epic saves state', async (t) => {
 
     const response = await request(app)
         .post('/api/v1/discord/notifications/epic')
-        .send({ enabled: true, channelId: 'channel-1', guildId: 'guild-1' });
+        .send({ enabled: true });
 
-    assert.equal(response.status, 200);
-    assert.equal(response.body.success, true);
-    assert.equal(response.body.data.state.enabled, true);
-    assert.deepEqual(state.savedBody, { enabled: true, channelId: 'channel-1', guildId: 'guild-1' });
+    assert.equal(response.status, 400);
 });
 
-test('POST /api/v1/discord/notifications/epic rejects missing channel on enable', async (t) => {
-    const mocksModule = buildMocks({ user: makeUser() });
-    mocksModule.mocks['src/services/discord/notificationsService.js'].saveStatus = async () => {
-        const err = new Error('channelId y guildId son obligatorios para activar notificaciones');
+test('POST /api/v1/discord/notifications/epic bubbles up service errors', async (t) => {
+    const { mocks } = buildMocks();
+    mocks['src/services/discord/notificationsService.js'].saveStatus = async () => {
+        const err = new Error('Falta channelId para activar notificaciones en guild-1');
         err.status = 400;
         throw err;
     };
-
     const { app, cleanup } = createRouteApp({
         routePath: 'src/routes/discord.js',
         mountPath: '/api/v1/discord',
-        mocks: mocksModule.mocks,
+        mocks,
     });
     t.after(cleanup);
 
     const response = await request(app)
         .post('/api/v1/discord/notifications/epic')
-        .send({ enabled: true });
+        .send({ configs: [{ guildId: 'guild-1', enabled: true }] });
 
     assert.equal(response.status, 400);
 });

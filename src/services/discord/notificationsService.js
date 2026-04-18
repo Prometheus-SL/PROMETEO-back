@@ -8,14 +8,36 @@ const { EPIC_SOURCE } = require('./newsScheduler');
 const defaultProvider = createEpicFreeGamesProvider();
 const defaultChannelStateStore = createChannelStateStore();
 
-function readState(user) {
-    const epic = user?.linkedAccounts?.discord?.notifications?.epicFreeGames;
+function normalizeEntry(raw) {
     return {
-        enabled: Boolean(epic?.enabled),
-        channelId: epic?.channelId ?? null,
-        guildId: epic?.guildId ?? null,
-        lastNotifiedAt: epic?.lastNotifiedAt ?? null,
-        lastError: epic?.lastError ?? null,
+        guildId: String(raw?.guildId ?? ''),
+        channelId: raw?.channelId ? String(raw.channelId) : null,
+        enabled: Boolean(raw?.enabled),
+        lastNotifiedIds: Array.isArray(raw?.lastNotifiedIds) ? raw.lastNotifiedIds : [],
+        lastNotifiedAt: raw?.lastNotifiedAt ?? null,
+        lastError: raw?.lastError ?? null,
+    };
+}
+
+function readEntries(user) {
+    const raw = user?.linkedAccounts?.discord?.notifications?.epicFreeGames;
+    if (Array.isArray(raw)) {
+        return raw.map(normalizeEntry);
+    }
+    // Legacy object-shape fallback
+    if (raw && typeof raw === 'object' && raw.guildId) {
+        return [normalizeEntry(raw)];
+    }
+    return [];
+}
+
+function publicEntry(entry) {
+    return {
+        guildId: entry.guildId,
+        channelId: entry.channelId,
+        enabled: Boolean(entry.enabled),
+        lastNotifiedAt: entry.lastNotifiedAt ?? null,
+        lastError: entry.lastError ?? null,
     };
 }
 
@@ -26,7 +48,7 @@ async function getStatus(userId) {
         err.status = 404;
         throw err;
     }
-    return readState(user);
+    return { configs: readEntries(user).map(publicEntry) };
 }
 
 async function validateTextChannel({ guildId, channelId }) {
@@ -50,7 +72,16 @@ async function validateTextChannel({ guildId, channelId }) {
     }
 }
 
-async function saveStatus(userId, { enabled, channelId, guildId }, {
+function dedupeByGuild(entries) {
+    const byGuild = new Map();
+    for (const entry of entries) {
+        if (!entry.guildId) continue;
+        byGuild.set(entry.guildId, entry);
+    }
+    return Array.from(byGuild.values());
+}
+
+async function saveStatus(userId, incomingConfigs, {
     provider = defaultProvider,
     messengerFactory = createDiscordNewsMessenger,
     channelStateStore = defaultChannelStateStore,
@@ -62,72 +93,91 @@ async function saveStatus(userId, { enabled, channelId, guildId }, {
         throw err;
     }
 
+    const normalizedIncoming = dedupeByGuild(
+        (Array.isArray(incomingConfigs) ? incomingConfigs : []).map(normalizeEntry),
+    );
+
+    for (const entry of normalizedIncoming) {
+        if (!entry.guildId) {
+            const err = new Error('Cada configuración requiere guildId');
+            err.status = 400;
+            throw err;
+        }
+        if (entry.enabled) {
+            if (!entry.channelId) {
+                const err = new Error(`Falta channelId para activar notificaciones en ${entry.guildId}`);
+                err.status = 400;
+                throw err;
+            }
+            await validateTextChannel({ guildId: entry.guildId, channelId: entry.channelId });
+        }
+    }
+
     user.linkedAccounts = user.linkedAccounts || {};
     user.linkedAccounts.discord = user.linkedAccounts.discord || {};
     user.linkedAccounts.discord.notifications = user.linkedAccounts.discord.notifications || {};
 
-    const current = user.linkedAccounts.discord.notifications.epicFreeGames || {
-        enabled: false,
-        lastNotifiedIds: [],
-    };
+    const existing = readEntries(user);
+    const existingByGuild = new Map(existing.map((e) => [e.guildId, e]));
 
-    const wasEnabled = Boolean(current.enabled);
-    const willBeEnabled = Boolean(enabled);
+    const warnings = [];
+    const nextEntries = [];
 
-    if (willBeEnabled) {
-        if (!channelId || !guildId) {
-            const err = new Error('channelId y guildId son obligatorios para activar notificaciones');
-            err.status = 400;
-            throw err;
-        }
-        await validateTextChannel({ guildId, channelId });
-    }
+    for (const incoming of normalizedIncoming) {
+        const prev = existingByGuild.get(incoming.guildId) || {
+            lastNotifiedIds: [],
+            lastNotifiedAt: null,
+            enabled: false,
+        };
 
-    const nextState = {
-        enabled: willBeEnabled,
-        channelId: willBeEnabled ? channelId : (current.channelId ?? null),
-        guildId: willBeEnabled ? guildId : (current.guildId ?? null),
-        lastNotifiedIds: current.lastNotifiedIds ?? [],
-        lastNotifiedAt: current.lastNotifiedAt ?? null,
-        lastError: null,
-    };
+        const wasEnabled = Boolean(prev.enabled);
+        const willBeEnabled = Boolean(incoming.enabled);
 
-    let warning = null;
+        const nextEntry = {
+            guildId: incoming.guildId,
+            channelId: willBeEnabled ? incoming.channelId : (incoming.channelId ?? prev.channelId ?? null),
+            enabled: willBeEnabled,
+            lastNotifiedIds: prev.lastNotifiedIds ?? [],
+            lastNotifiedAt: prev.lastNotifiedAt ?? null,
+            lastError: null,
+        };
 
-    if (willBeEnabled && !wasEnabled) {
-        try {
-            const games = await provider.fetchCurrentFreeGames();
-            if (games.length > 0) {
-                const bot = getClient();
-                if (!bot) {
-                    throw new Error('Discord bot is not connected');
+        if (willBeEnabled && !wasEnabled) {
+            try {
+                const games = await provider.fetchCurrentFreeGames();
+                if (games.length > 0) {
+                    const bot = getClient();
+                    if (!bot) throw new Error('Discord bot is not connected');
+                    const knownByChannel = await channelStateStore.getKnownIds(nextEntry.channelId, EPIC_SOURCE);
+                    const gamesToSend = games.filter((g) => !knownByChannel.has(g.id));
+                    const allIds = games.map((g) => g.id);
+
+                    if (gamesToSend.length > 0) {
+                        const messenger = messengerFactory({ client: bot });
+                        await messenger.sendFreeGames(nextEntry.channelId, gamesToSend);
+                        const nextChannelIds = Array.from(new Set([...knownByChannel, ...allIds]));
+                        await channelStateStore.recordSent(nextEntry.channelId, EPIC_SOURCE, nextChannelIds);
+                        nextEntry.lastNotifiedAt = new Date();
+                    }
+                    nextEntry.lastNotifiedIds = allIds;
                 }
-                const knownByChannel = await channelStateStore.getKnownIds(channelId, EPIC_SOURCE);
-                const gamesToSend = games.filter((g) => !knownByChannel.has(g.id));
-                const allIds = games.map((g) => g.id);
-
-                if (gamesToSend.length > 0) {
-                    const messenger = messengerFactory({ client: bot });
-                    await messenger.sendFreeGames(channelId, gamesToSend);
-                    const nextChannelIds = Array.from(new Set([...knownByChannel, ...allIds]));
-                    await channelStateStore.recordSent(channelId, EPIC_SOURCE, nextChannelIds);
-                    nextState.lastNotifiedAt = new Date();
-                }
-                // En ambos casos sincronizamos el estado del usuario con los IDs actuales,
-                // para que el próximo tick no vuelva a reintentar los mismos juegos.
-                nextState.lastNotifiedIds = allIds;
+            } catch (err) {
+                warnings.push(`${incoming.guildId}: ${err.message}`);
+                nextEntry.lastError = err.message;
             }
-        } catch (err) {
-            warning = `notifications_saved_but_initial_send_failed: ${err.message}`;
-            nextState.lastError = err.message;
         }
+
+        nextEntries.push(nextEntry);
     }
 
-    user.linkedAccounts.discord.notifications.epicFreeGames = nextState;
+    user.linkedAccounts.discord.notifications.epicFreeGames = nextEntries;
     user.markModified('linkedAccounts.discord.notifications.epicFreeGames');
     await user.save();
 
-    return { state: readState(user), warning };
+    return {
+        configs: readEntries(user).map(publicEntry),
+        warning: warnings.length ? warnings.join('; ') : null,
+    };
 }
 
-module.exports = { getStatus, saveStatus };
+module.exports = { getStatus, saveStatus, readEntries };

@@ -3,13 +3,19 @@ const { createNoopChannelStateStore } = require('./channelStateStore');
 const POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const EPIC_SOURCE = 'epicFreeGames';
 
-async function tickUser(user, currentGames, messenger, channelStateStore = createNoopChannelStateStore()) {
-    const state = user?.linkedAccounts?.discord?.notifications?.epicFreeGames;
-    if (!state || !state.enabled || !state.channelId) {
-        return { skipped: true, newGames: [], nextIds: state?.lastNotifiedIds ?? [], error: null };
+function readEntries(user) {
+    const raw = user?.linkedAccounts?.discord?.notifications?.epicFreeGames;
+    if (Array.isArray(raw)) return raw;
+    if (raw && typeof raw === 'object' && raw.guildId) return [raw];
+    return [];
+}
+
+async function tickEntry(entry, currentGames, messenger, channelStateStore = createNoopChannelStateStore()) {
+    if (!entry || !entry.enabled || !entry.channelId) {
+        return { skipped: true, newGames: [], nextIds: entry?.lastNotifiedIds ?? [], error: null };
     }
 
-    const knownByUser = new Set(state.lastNotifiedIds ?? []);
+    const knownByUser = new Set(entry.lastNotifiedIds ?? []);
     const newForUser = currentGames.filter((game) => !knownByUser.has(game.id));
     const nextIds = currentGames.map((g) => g.id);
 
@@ -19,27 +25,32 @@ async function tickUser(user, currentGames, messenger, channelStateStore = creat
 
     let knownByChannel;
     try {
-        knownByChannel = await channelStateStore.getKnownIds(state.channelId, EPIC_SOURCE);
+        knownByChannel = await channelStateStore.getKnownIds(entry.channelId, EPIC_SOURCE);
     } catch (err) {
-        return { skipped: false, newGames: newForUser, nextIds: state.lastNotifiedIds ?? [], error: err };
+        return { skipped: false, newGames: newForUser, nextIds: entry.lastNotifiedIds ?? [], error: err };
     }
 
     const newForChannel = newForUser.filter((game) => !knownByChannel.has(game.id));
 
     if (newForChannel.length === 0) {
-        // Otro usuario ya notificó este canal con estos juegos. Sincronizamos
-        // el estado del usuario para no reintentar, pero no volvemos a enviar.
         return { skipped: false, newGames: [], nextIds, error: null };
     }
 
     try {
-        await messenger.sendFreeGames(state.channelId, newForChannel);
+        await messenger.sendFreeGames(entry.channelId, newForChannel);
         const nextChannelIds = Array.from(new Set([...knownByChannel, ...nextIds]));
-        await channelStateStore.recordSent(state.channelId, EPIC_SOURCE, nextChannelIds);
+        await channelStateStore.recordSent(entry.channelId, EPIC_SOURCE, nextChannelIds);
         return { skipped: false, newGames: newForChannel, nextIds, error: null };
     } catch (err) {
-        return { skipped: false, newGames: newForChannel, nextIds: state.lastNotifiedIds ?? [], error: err };
+        return { skipped: false, newGames: newForChannel, nextIds: entry.lastNotifiedIds ?? [], error: err };
     }
+}
+
+// Back-compat wrapper: old signature tickUser(user, ...) picks first entry.
+async function tickUser(user, currentGames, messenger, channelStateStore) {
+    const entries = readEntries(user);
+    const entry = entries[0];
+    return tickEntry(entry, currentGames, messenger, channelStateStore);
 }
 
 function createDiscordNewsScheduler({
@@ -70,17 +81,23 @@ function createDiscordNewsScheduler({
             });
 
             for (const user of users) {
-                const result = await tickUser(user, games, messenger, channelStateStore);
-                if (result.skipped) continue;
-
-                const epic = user.linkedAccounts.discord.notifications.epicFreeGames;
-                if (result.error) {
-                    epic.lastError = result.error.message || String(result.error);
-                } else {
-                    epic.lastNotifiedIds = result.nextIds;
-                    epic.lastNotifiedAt = new Date();
-                    epic.lastError = null;
+                const entries = readEntries(user);
+                let dirty = false;
+                for (const entry of entries) {
+                    if (!entry.enabled || !entry.channelId) continue;
+                    const result = await tickEntry(entry, games, messenger, channelStateStore);
+                    if (result.skipped) continue;
+                    if (result.error) {
+                        entry.lastError = result.error.message || String(result.error);
+                    } else {
+                        entry.lastNotifiedIds = result.nextIds;
+                        entry.lastNotifiedAt = new Date();
+                        entry.lastError = null;
+                    }
+                    dirty = true;
                 }
+                if (!dirty) continue;
+                user.markModified('linkedAccounts.discord.notifications.epicFreeGames');
                 try {
                     await user.save();
                 } catch (err) {
@@ -98,7 +115,6 @@ function createDiscordNewsScheduler({
         start() {
             if (timer) return;
             timer = setInterval(runTick, intervalMs);
-            // Fire one tick on start so a restart doesn't delay notifications by an hour.
             void runTick();
         },
         stop() {
@@ -111,4 +127,4 @@ function createDiscordNewsScheduler({
     };
 }
 
-module.exports = { tickUser, createDiscordNewsScheduler, POLL_INTERVAL_MS, EPIC_SOURCE };
+module.exports = { tickUser, tickEntry, createDiscordNewsScheduler, POLL_INTERVAL_MS, EPIC_SOURCE };

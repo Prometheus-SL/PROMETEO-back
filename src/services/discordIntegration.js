@@ -11,7 +11,7 @@ const {
 const DISCORD_API_BASE_URL = 'https://discord.com/api/v10';
 const DISCORD_AUTHORIZE_URL = 'https://discord.com/oauth2/authorize';
 const DISCORD_TOKEN_URL = `${DISCORD_API_BASE_URL}/oauth2/token`;
-const DISCORD_SCOPES = ['identify', 'email'];
+const DISCORD_SCOPES = ['identify', 'email', 'guilds'];
 
 function assertDiscordConfigured() {
     const clientId = String(process.env.DISCORD_CLIENT_ID || '').trim();
@@ -289,6 +289,60 @@ async function completeDiscordLink(user, code) {
     return serializeDiscordLinkedAccount(user.linkedAccounts?.discord);
 }
 
+async function refreshDiscordAccessToken(user) {
+    const credentials = readDiscordCredentials(user);
+    if (!credentials?.refreshToken) {
+        throw createLinkedAccountError(
+            412,
+            'REAUTH_REQUIRED',
+            'Discord needs you to link your account again.'
+        );
+    }
+    const tokenPayload = await requestDiscordToken({
+        grant_type: 'refresh_token',
+        refresh_token: credentials.refreshToken,
+    });
+    persistDiscordTokens(user, tokenPayload, null);
+    await user.save();
+    return readDiscordCredentials(user);
+}
+
+async function getValidDiscordAccessToken(user) {
+    const discord = user?.linkedAccounts?.discord;
+    if (discord?.status !== 'connected') {
+        throw createLinkedAccountError(
+            412,
+            'REAUTH_REQUIRED',
+            'Discord needs you to link your account again.'
+        );
+    }
+    const credentials = readDiscordCredentials(user);
+    if (!credentials?.accessToken) {
+        throw createLinkedAccountError(
+            412,
+            'REAUTH_REQUIRED',
+            'Discord needs you to link your account again.'
+        );
+    }
+    const expiresAt = discord.tokenExpiresAt ? new Date(discord.tokenExpiresAt).getTime() : 0;
+    if (expiresAt && expiresAt < Date.now() + 60_000) {
+        const refreshed = await refreshDiscordAccessToken(user);
+        return refreshed?.accessToken || credentials.accessToken;
+    }
+    return credentials.accessToken;
+}
+
+async function fetchDiscordUserGuilds(accessToken) {
+    const response = await fetch(`${DISCORD_API_BASE_URL}/users/@me/guilds`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const payload = await parseDiscordResponse(response);
+    if (!response.ok) {
+        throw createDiscordApiError(response, payload);
+    }
+    return Array.isArray(payload) ? payload : [];
+}
+
 async function disconnectDiscordAccount(user) {
     user.clearLinkedAccount('discord');
     await user.save();
@@ -305,6 +359,9 @@ module.exports = {
     buildDiscordAuthorizeUrl,
     completeDiscordLink,
     disconnectDiscordAccount,
+    fetchDiscordUserGuilds,
     getDiscordStatus,
+    getValidDiscordAccessToken,
     markDiscordReauthRequired,
+    refreshDiscordAccessToken,
 };
