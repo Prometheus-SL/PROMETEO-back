@@ -1,5 +1,5 @@
 const { Client, GatewayIntentBits, PermissionsBitField } = require('discord.js');
-const User = require('../../models/User');
+const GuildNotificationConfig = require('../../models/GuildNotificationConfig');
 const { createEpicFreeGamesProvider } = require('./providers/epicFreeGames');
 const { createDiscordNewsMessenger } = require('./newsMessenger');
 const { createDiscordNewsScheduler } = require('./newsScheduler');
@@ -14,7 +14,7 @@ function startNewsSchedulerIfNeeded(botClient) {
     if (scheduler) return;
     try {
         scheduler = createDiscordNewsScheduler({
-            User,
+            GuildNotificationConfig,
             provider: createEpicFreeGamesProvider(),
             messenger: createDiscordNewsMessenger({ client: botClient }),
             channelStateStore: createChannelStateStore(),

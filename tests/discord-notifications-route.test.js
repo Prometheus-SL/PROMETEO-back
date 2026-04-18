@@ -18,11 +18,11 @@ function buildMocks({ initialConfigs = [] } = {}) {
                     return (_req, _res, next) => next();
                 },
             },
-            'src/services/discord/notificationsService.js': {
-                async getStatus() {
-                    return { configs: state.configs };
+            'src/services/discord/guildConfigService.js': {
+                async getStatusForUser() {
+                    return { configs: state.configs, needsLink: false, needsReauth: false };
                 },
-                async saveStatus(_userId, configs) {
+                async saveStatusForUser(_userId, configs) {
                     state.savedBody = configs;
                     state.configs = configs.map((c) => ({
                         guildId: c.guildId,
@@ -30,6 +30,8 @@ function buildMocks({ initialConfigs = [] } = {}) {
                         enabled: Boolean(c.enabled),
                         lastNotifiedAt: null,
                         lastError: null,
+                        updatedBy: 'user-1',
+                        updatedAt: new Date(),
                     }));
                     return { configs: state.configs, warning: null };
                 },
@@ -111,7 +113,7 @@ test('POST /api/v1/discord/notifications/epic rejects non-array body', async (t)
 
 test('POST /api/v1/discord/notifications/epic bubbles up service errors', async (t) => {
     const { mocks } = buildMocks();
-    mocks['src/services/discord/notificationsService.js'].saveStatus = async () => {
+    mocks['src/services/discord/guildConfigService.js'].saveStatusForUser = async () => {
         const err = new Error('Falta channelId para activar notificaciones en guild-1');
         err.status = 400;
         throw err;
@@ -128,4 +130,25 @@ test('POST /api/v1/discord/notifications/epic bubbles up service errors', async 
         .send({ configs: [{ guildId: 'guild-1', enabled: true }] });
 
     assert.equal(response.status, 400);
+});
+
+test('POST /api/v1/discord/notifications/epic forbids non-admin guilds', async (t) => {
+    const { mocks } = buildMocks();
+    mocks['src/services/discord/guildConfigService.js'].saveStatusForUser = async () => {
+        const err = new Error('No eres admin/owner del servidor guild-x');
+        err.status = 403;
+        throw err;
+    };
+    const { app, cleanup } = createRouteApp({
+        routePath: 'src/routes/discord.js',
+        mountPath: '/api/v1/discord',
+        mocks,
+    });
+    t.after(cleanup);
+
+    const response = await request(app)
+        .post('/api/v1/discord/notifications/epic')
+        .send({ configs: [{ guildId: 'guild-x', channelId: 'ch-1', enabled: true }] });
+
+    assert.equal(response.status, 403);
 });
