@@ -11,6 +11,7 @@ const {
 const SPOTIFY_ACCOUNTS_BASE_URL = 'https://accounts.spotify.com';
 const SPOTIFY_API_BASE_URL = 'https://api.spotify.com/v1';
 const SPOTIFY_SCOPES = [
+    'streaming',
     'user-read-private',
     'user-read-playback-state',
     'user-read-currently-playing',
@@ -316,6 +317,23 @@ function assertSpotifyLinked(user) {
     return spotify;
 }
 
+function assertSpotifyScopes(user, requiredScopes) {
+    const spotify = assertSpotifyLinked(user);
+    const grantedScopes = new Set(Array.isArray(spotify.scopes) ? spotify.scopes : []);
+    const missingScopes = requiredScopes.filter((scope) => !grantedScopes.has(scope));
+
+    if (missingScopes.length > 0) {
+        throw createLinkedAccountError(
+            412,
+            'REAUTH_REQUIRED',
+            'Reconnect Spotify from Account to enable browser playback.',
+            { missingScopes }
+        );
+    }
+
+    return spotify;
+}
+
 async function refreshSpotifyAccessToken(user) {
     const spotify = assertSpotifyLinked(user);
     const credentials = readSpotifyCredentials(user);
@@ -464,6 +482,18 @@ async function getSpotifyStatus(user) {
     return serializeSpotifyLinkedAccount(user?.linkedAccounts?.spotify);
 }
 
+async function getSpotifyWebPlaybackToken(user) {
+    assertSpotifyScopes(user, ['streaming']);
+    const accessToken = await ensureSpotifyAccessToken(user);
+    const spotify = user?.linkedAccounts?.spotify || {};
+
+    return {
+        accessToken,
+        expiresAt: spotify.tokenExpiresAt || null,
+        scopes: Array.isArray(spotify.scopes) ? spotify.scopes : [],
+    };
+}
+
 async function getSpotifyPlaybackState(user) {
     return await spotifyApiRequest(user, '/me/player');
 }
@@ -481,6 +511,26 @@ async function playSpotify(user, body = undefined) {
     await spotifyApiRequest(user, '/me/player/play', {
         method: 'PUT',
         body: body && Object.keys(body).length > 0 ? body : undefined,
+    });
+}
+
+async function transferSpotifyPlayback(user, deviceId, options = {}) {
+    const normalizedDeviceId = String(deviceId || '').trim();
+
+    if (!normalizedDeviceId) {
+        throw createLinkedAccountError(
+            400,
+            'SPOTIFY_DEVICE_ID_REQUIRED',
+            'deviceId is required to transfer Spotify playback.'
+        );
+    }
+
+    await spotifyApiRequest(user, '/me/player', {
+        method: 'PUT',
+        body: {
+            device_ids: [normalizedDeviceId],
+            play: options.play !== false,
+        },
     });
 }
 
@@ -537,6 +587,7 @@ module.exports = {
     getSpotifyPlaybackState,
     getSpotifyQueue,
     getSpotifyStatus,
+    getSpotifyWebPlaybackToken,
     nextSpotifyTrack,
     pauseSpotify,
     playSpotify,
@@ -546,4 +597,5 @@ module.exports = {
     setSpotifyRepeat,
     setSpotifyShuffle,
     setSpotifyVolume,
+    transferSpotifyPlayback,
 };

@@ -7,6 +7,7 @@ const {
     getSpotifyPlaybackState,
     getSpotifyQueue,
     getSpotifyStatus,
+    getSpotifyWebPlaybackToken,
     nextSpotifyTrack,
     pauseSpotify,
     playSpotify,
@@ -16,6 +17,7 @@ const {
     setSpotifyRepeat,
     setSpotifyShuffle,
     setSpotifyVolume,
+    transferSpotifyPlayback,
 } = require('../services/spotifyIntegration');
 
 const router = express.Router();
@@ -33,6 +35,21 @@ router.get('/player', authenticateToken, asyncHandler(async (req, res) => {
 router.get('/player/queue', authenticateToken, asyncHandler(async (req, res) => {
     const queue = await getSpotifyQueue(req.user);
     return ok(res, { queue });
+}));
+
+router.get('/player/web-token', authenticateToken, asyncHandler(async (req, res) => {
+    const token = await getSpotifyWebPlaybackToken(req.user);
+    return ok(res, token);
+}));
+
+router.put('/player/transfer', authenticateToken, asyncHandler(async (req, res) => {
+    const deviceId = String(req.body?.deviceId || '').trim();
+    if (!deviceId) {
+        throw createHttpError(400, 'SPOTIFY_DEVICE_ID_REQUIRED', 'deviceId is required to transfer playback.');
+    }
+
+    await transferSpotifyPlayback(req.user, deviceId, { play: req.body?.play !== false });
+    return ok(res, null, { message: 'Playback transferred.' });
 }));
 
 router.put('/player/play-track', authenticateToken, asyncHandler(async (req, res) => {
