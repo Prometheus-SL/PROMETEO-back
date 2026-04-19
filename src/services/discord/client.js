@@ -4,25 +4,48 @@ const { createEpicFreeGamesProvider } = require('./providers/epicFreeGames');
 const { createDiscordNewsMessenger } = require('./newsMessenger');
 const { createDiscordNewsScheduler } = require('./newsScheduler');
 const { createChannelStateStore } = require('./channelStateStore');
+const { createSteamUpdatesScheduler } = require('./steamUpdatesScheduler');
+const { createSteamNewsProvider } = require('./providers/steamNews');
+const { getSharedCatalog } = require('./steamCatalog');
 
 let client = null;
 let ready = false;
 let initPromise = null;
 let scheduler = null;
+let steamScheduler = null;
+let steamCatalogInstance = null;
 
 function startNewsSchedulerIfNeeded(botClient) {
-    if (scheduler) return;
+    if (!scheduler) {
+        try {
+            scheduler = createDiscordNewsScheduler({
+                GuildNotificationConfig,
+                provider: createEpicFreeGamesProvider(),
+                messenger: createDiscordNewsMessenger({ client: botClient }),
+                channelStateStore: createChannelStateStore(),
+            });
+            scheduler.start();
+            console.log('[Discord] News scheduler arrancado (tick cada 1 h)');
+        } catch (err) {
+            console.error('[Discord] No se pudo arrancar el news scheduler:', err.message);
+        }
+    }
+
+    if (steamScheduler) return;
     try {
-        scheduler = createDiscordNewsScheduler({
+        steamCatalogInstance = getSharedCatalog();
+        steamCatalogInstance.start();
+
+        steamScheduler = createSteamUpdatesScheduler({
             GuildNotificationConfig,
-            provider: createEpicFreeGamesProvider(),
+            provider: createSteamNewsProvider(),
             messenger: createDiscordNewsMessenger({ client: botClient }),
             channelStateStore: createChannelStateStore(),
         });
-        scheduler.start();
-        console.log('[Discord] News scheduler arrancado (tick cada 1 h)');
+        steamScheduler.start();
+        console.log('[Discord] Steam updates scheduler arrancado (tick cada 1 h)');
     } catch (err) {
-        console.error('[Discord] No se pudo arrancar el news scheduler:', err.message);
+        console.error('[Discord] No se pudo arrancar el Steam updates scheduler:', err.message);
     }
 }
 

@@ -5,6 +5,8 @@ const { createHttpError } = require('../http/errors');
 const { ok } = require('../http/responses');
 const { initBot, getStatus, getGuildInfo, getInviteUrl, disconnectVoiceMember, setVoiceMute, getMemberPermissions } = require('../services/discord/client');
 const guildConfigService = require('../services/discord/guildConfigService');
+const gameUpdatesService = require('../services/discord/gameUpdatesService');
+const { getSharedCatalog } = require('../services/discord/steamCatalog');
 const { getUserAdminGuilds } = require('../services/discord/userGuildsService');
 const User = require('../models/User');
 
@@ -77,6 +79,37 @@ router.post('/notifications/epic', authenticateToken, ensureBot, asyncHandler(as
         enabled: Boolean(c?.enabled),
     }));
     const result = await guildConfigService.saveStatusForUser(req.user._id, normalized);
+    return ok(res, result);
+}));
+
+router.get('/games/search', authenticateToken, asyncHandler(async (req, res) => {
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 20) : 20;
+    const catalog = getSharedCatalog();
+    const results = catalog.search ? await catalog.search(q, { limit }) : [];
+    return ok(res, { results });
+}));
+
+router.get('/notifications/game-updates', authenticateToken, ensureBot, asyncHandler(async (req, res) => {
+    const state = await gameUpdatesService.getStatusForUser(req.user._id);
+    return ok(res, state);
+}));
+
+router.post('/notifications/game-updates', authenticateToken, ensureBot, asyncHandler(async (req, res) => {
+    const configs = Array.isArray(req.body?.configs) ? req.body.configs : null;
+    if (!configs) {
+        throw createHttpError(400, 'INVALID_BODY', 'Expected { configs: [{ guildId, channelId, enabled, subscriptions }] }');
+    }
+    const normalized = configs.map((c) => ({
+        guildId: typeof c?.guildId === 'string' ? c.guildId : '',
+        channelId: typeof c?.channelId === 'string' ? c.channelId : null,
+        enabled: Boolean(c?.enabled),
+        subscriptions: Array.isArray(c?.subscriptions)
+            ? c.subscriptions.map((s) => ({ appId: Number(s?.appId) })).filter((s) => Number.isFinite(s.appId))
+            : [],
+    }));
+    const result = await gameUpdatesService.saveStatusForUser(req.user._id, normalized);
     return ok(res, result);
 }));
 
