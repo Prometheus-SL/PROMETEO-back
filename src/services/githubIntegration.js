@@ -15,6 +15,22 @@ const GITHUB_API_VERSION = '2022-11-28';
 
 const GITHUB_SCOPES = ['read:user', 'user:email', 'notifications', 'repo'];
 
+const _githubCache = new Map();
+const GITHUB_CACHE_TTL_MS = 60_000;
+
+function _getGithubCached(key) {
+    const entry = _githubCache.get(key);
+    if (!entry || Date.now() - entry.ts > GITHUB_CACHE_TTL_MS) {
+        _githubCache.delete(key);
+        return undefined;
+    }
+    return entry.value;
+}
+
+function _setGithubCache(key, value) {
+    _githubCache.set(key, { value, ts: Date.now() });
+}
+
 function assertGithubConfigured() {
     const clientId = String(process.env.GITHUB_CLIENT_ID || '').trim();
     const clientSecret = String(process.env.GITHUB_CLIENT_SECRET || '').trim();
@@ -488,34 +504,34 @@ async function getAssignedPullRequests(user, login, limit) {
 
     const payload = await githubApiRequest(user, searchUrl.toString());
     const items = Array.isArray(payload?.items) ? payload.items : [];
-    const pullRequests = [];
+    const pullRequests = await Promise.all(
+        items.slice(0, limit).map(async (item) => {
+            const repository = String(item?.repository_url || '')
+                .replace(`${GITHUB_API_BASE_URL}/repos/`, '')
+                .trim();
+            const details = item?.pull_request?.url
+                ? await githubApiRequest(user, item.pull_request.url)
+                : null;
+            const checks = await getPullRequestChecks(user, repository, details?.head?.sha || null)
+                .catch(() => ({
+                    state: 'unknown',
+                    totalCount: 0,
+                    hasFailingChecks: false,
+                }));
 
-    for (const item of items.slice(0, limit)) {
-        const repository = String(item?.repository_url || '')
-            .replace(`${GITHUB_API_BASE_URL}/repos/`, '')
-            .trim();
-        const details = item?.pull_request?.url
-            ? await githubApiRequest(user, item.pull_request.url)
-            : null;
-        const checks = await getPullRequestChecks(user, repository, details?.head?.sha || null)
-            .catch(() => ({
-                state: 'unknown',
-                totalCount: 0,
-                hasFailingChecks: false,
-            }));
-
-        pullRequests.push({
-            id: item?.id || null,
-            number: item?.number || null,
-            repository,
-            title: item?.title || 'Untitled pull request',
-            updatedAt: item?.updated_at || null,
-            url: item?.html_url || buildGithubWebUrl(item?.pull_request?.url, repository),
-            hasFailingChecks: checks.hasFailingChecks,
-            checksState: checks.state,
-            checksCount: checks.totalCount,
-        });
-    }
+            return {
+                id: item?.id || null,
+                number: item?.number || null,
+                repository,
+                title: item?.title || 'Untitled pull request',
+                updatedAt: item?.updated_at || null,
+                url: item?.html_url || buildGithubWebUrl(item?.pull_request?.url, repository),
+                hasFailingChecks: checks.hasFailingChecks,
+                checksState: checks.state,
+                checksCount: checks.totalCount,
+            };
+        })
+    );
 
     return pullRequests;
 }
@@ -545,6 +561,11 @@ async function getGithubNotifications(user, limit) {
 }
 
 async function getGithubPulse(user, options = {}) {
+    const userId = String(user?._id || '');
+    const cacheKey = `pulse:${userId}`;
+    const cached = _getGithubCached(cacheKey);
+    if (cached) return cached;
+
     const provider = parseGithubStatus(user?.linkedAccounts?.github);
     const disconnectedMessage = provider.status === 'reauth_required'
         ? 'Reconnect GitHub from Account to restore pulse data.'
@@ -564,15 +585,17 @@ async function getGithubPulse(user, options = {}) {
 
     const notificationsLimit = Math.max(3, Math.min(12, Number(options.notificationsLimit) || 8));
     const pullsLimit = Math.max(1, Math.min(10, Number(options.pullsLimit) || 5));
-    const liveProfile = await githubApiRequest(user, `${GITHUB_API_BASE_URL}/user`)
-        .catch(() => provider.profile || {});
+    const [liveProfile, notifications] = await Promise.all([
+        githubApiRequest(user, `${GITHUB_API_BASE_URL}/user`)
+            .catch(() => provider.profile || {}),
+        getGithubNotifications(user, notificationsLimit)
+            .catch(() => []),
+    ]);
     const profile = serializeGithubProfile(liveProfile);
-    const notifications = await getGithubNotifications(user, notificationsLimit)
-        .catch(() => []);
     const assignedPullRequests = await getAssignedPullRequests(user, profile.login, pullsLimit)
         .catch(() => []);
 
-    return {
+    const result = {
         provider,
         profile,
         assignedPullRequests,
@@ -582,6 +605,47 @@ async function getGithubPulse(user, options = {}) {
         )).length,
         failingChecksCount: assignedPullRequests.filter((item) => item.hasFailingChecks).length,
     };
+    _setGithubCache(cacheKey, result);
+    return result;
+}
+
+const GITHUB_GRAPHQL_URL = 'https://api.github.com/graphql';
+
+async function githubGraphQL(user, query, variables = {}) {
+    const accessToken = await ensureGithubAccessToken(user);
+    const response = await fetch(GITHUB_GRAPHQL_URL, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            'X-GitHub-Api-Version': GITHUB_API_VERSION,
+        },
+        body: JSON.stringify({ query, variables }),
+    });
+
+    if (response.status === 401 && readGithubCredentials(user)?.refreshToken) {
+        const nextToken = await refreshGithubAccessToken(user);
+        const retryResponse = await fetch(GITHUB_GRAPHQL_URL, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${nextToken}`,
+                'Content-Type': 'application/json',
+                'X-GitHub-Api-Version': GITHUB_API_VERSION,
+            },
+            body: JSON.stringify({ query, variables }),
+        });
+        const payload = await retryResponse.json();
+        if (payload.errors) {
+            throw createLinkedAccountError(400, 'GITHUB_GRAPHQL_ERROR', payload.errors[0]?.message || 'GraphQL error');
+        }
+        return payload.data;
+    }
+
+    const payload = await response.json();
+    if (payload.errors) {
+        throw createLinkedAccountError(400, 'GITHUB_GRAPHQL_ERROR', payload.errors[0]?.message || 'GraphQL error');
+    }
+    return payload.data;
 }
 
 module.exports = {
@@ -591,4 +655,5 @@ module.exports = {
     disconnectGithubAccount,
     getGithubPulse,
     getGithubStatus,
+    githubGraphQL,
 };

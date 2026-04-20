@@ -8,6 +8,22 @@ function readCreatorConfig() {
     };
 }
 
+const _creatorCache = new Map();
+const CREATOR_CACHE_TTL_MS = 60_000;
+
+function _getCreatorCached(key) {
+    const entry = _creatorCache.get(key);
+    if (!entry || Date.now() - entry.ts > CREATOR_CACHE_TTL_MS) {
+        _creatorCache.delete(key);
+        return undefined;
+    }
+    return entry.value;
+}
+
+function _setCreatorCache(key, value) {
+    _creatorCache.set(key, { value, ts: Date.now() });
+}
+
 async function parseResponse(response) {
     const contentType = response.headers.get('content-type') || '';
     if (response.status === 204) return null;
@@ -135,6 +151,9 @@ async function getTwitchSourceStatus(config) {
 }
 
 async function getCreatorDashboardStatus() {
+    const cached = _getCreatorCached('dashboard');
+    if (cached) return cached;
+
     const config = readCreatorConfig();
     const sources = await Promise.all([
         getYoutubeSourceStatus(config).catch((error) => ({
@@ -157,19 +176,24 @@ async function getCreatorDashboardStatus() {
 
     const liveCount = sources.filter((source) => source.status === 'live').length;
 
-    return {
+    const result = {
         online: liveCount > 0,
         liveCount,
         sources,
     };
+    _setCreatorCache('dashboard', result);
+    return result;
 }
 
 async function getCreatorStatus() {
+    const cached = _getCreatorCached('status');
+    if (cached) return cached;
+
     const dashboardStatus = await getCreatorDashboardStatus();
     const configuredSources = dashboardStatus.sources.filter((source) => source.status !== 'unavailable');
     const status = configuredSources.length > 0 ? 'connected' : 'disconnected';
 
-    return {
+    const result = {
         status,
         profile: {
             displayName: 'Creator Sources',
@@ -182,6 +206,8 @@ async function getCreatorStatus() {
             ? null
             : 'Configure at least one creator source to unlock live status widgets.',
     };
+    _setCreatorCache('status', result);
+    return result;
 }
 
 module.exports = {

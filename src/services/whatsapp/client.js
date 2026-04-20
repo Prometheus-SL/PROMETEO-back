@@ -22,10 +22,10 @@ const CLEANUP_INTERVAL_MS = Math.max(
 const puppeteerArgs = process.env.WHATSAPP_PUPPETEER_ARGS?.split(',')
     .map((arg) => arg.trim())
     .filter(Boolean) ?? [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-];
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+    ];
 
 const contexts = new Map();
 
@@ -100,6 +100,7 @@ function getOrCreateContext(userRef) {
             emitter: new EventEmitter(),
             client: null,
             initPromise: null,
+            initializing: false,
             backupPromise: null,
             lastTouchedAt: Date.now(),
         };
@@ -155,6 +156,12 @@ async function destroyClientContext(context, options = {}) {
 }
 
 function attachClientHandlers(context, instance) {
+    function clearInitializing() {
+        if (context.client === instance) {
+            context.initializing = false;
+        }
+    }
+
     instance.on('qr', async (raw) => {
         if (context.client !== instance) return;
 
@@ -179,6 +186,7 @@ function attachClientHandlers(context, instance) {
     instance.on('ready', () => {
         if (context.client !== instance) return;
 
+        clearInitializing();
         emitStatus(context, {
             state: 'ready',
             qr: null,
@@ -201,6 +209,7 @@ function attachClientHandlers(context, instance) {
     instance.on('auth_failure', (message) => {
         if (context.client !== instance) return;
 
+        clearInitializing();
         emitStatus(context, {
             state: 'error',
             error: message || 'Authentication failed',
@@ -251,6 +260,7 @@ function createClient(context) {
     });
 
     context.client = instance;
+    context.initializing = true;
     emitStatus(context, {
         state: 'initializing',
         error: null,
@@ -440,7 +450,7 @@ async function cleanupInactiveContexts() {
             continue;
         }
 
-        if (context.initPromise) {
+        if (context.initPromise || context.initializing) {
             continue;
         }
 
@@ -491,4 +501,9 @@ module.exports = {
     },
     fetchConversations,
     fetchMessages,
+    async sendMessage(userRef, chatId, text) {
+        const client = await ensureClient(userRef);
+        const msg = await client.sendMessage(chatId, text);
+        return { id: serializeMessageId(msg.id), timestamp: msg.timestamp };
+    },
 };

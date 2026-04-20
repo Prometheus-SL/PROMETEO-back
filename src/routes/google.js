@@ -17,6 +17,7 @@ router.get('/summary', authenticateToken, asyncHandler(async (req, res) => {
         calendar: {
             limit: req.query.calendarLimit,
             horizonDays: req.query.horizonDays,
+            calendarId: req.query.calendarId || 'primary',
         },
         tasks: {
             taskListsLimit: req.query.taskListsLimit,

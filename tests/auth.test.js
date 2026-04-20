@@ -26,6 +26,7 @@ function createMockUser(overrides = {}) {
 function createAuthRouteApp(options = {}) {
     const loginUser = options.loginUser || createMockUser();
     const refreshUser = options.refreshUser || loginUser;
+    const loginHistoryEntries = options.loginHistoryEntries || [];
 
     const mocks = {
         'src/models/User.js': {
@@ -38,6 +39,33 @@ function createAuthRouteApp(options = {}) {
 
                 return null;
             },
+        },
+        'src/models/LoginHistory.js': {
+            create: async () => ({}),
+            find() {
+                return {
+                    sort() {
+                        return {
+                            limit() {
+                                return {
+                                    skip() {
+                                        return {
+                                            lean: async () => loginHistoryEntries,
+                                        };
+                                    },
+                                };
+                            },
+                        };
+                    },
+                };
+            },
+            countDocuments: async () => loginHistoryEntries.length,
+        },
+        'src/services/totp.js': {
+            generateSecret: () => 'JBSWY3DPEHPK3PXP',
+            verifyTOTP: (_secret, token) => token === '123456',
+            buildOtpauthUri: (secret, username) => `otpauth://totp/PROMETEO:${username}?secret=${secret}`,
+            generateRecoveryCodes: () => ['ABCDEF12'],
         },
         'src/models/Agent.js': {
             findOne: async () => null,
@@ -123,6 +151,67 @@ test('POST /auth/login returns the success envelope with user and tokens', async
     assert.equal(registeredSession.refreshToken, 'refresh-token');
 });
 
+test('POST /auth/login requires a second factor before issuing tokens', async (t) => {
+    let saveCalled = false;
+    let registeredSession = null;
+
+    const loginUser = createMockUser({
+        twoFactor: {
+            enabled: true,
+            secret: 'JBSWY3DPEHPK3PXP',
+            recoveryCodes: [],
+        },
+        registerSession(session) {
+            registeredSession = session;
+        },
+        async save() {
+            saveCalled = true;
+        },
+    });
+
+    const { app, cleanup } = createAuthRouteApp({ loginUser });
+    t.after(cleanup);
+
+    const response = await request(app)
+        .post('/auth/login')
+        .send({ username: 'mike', password: 'secret' });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.success, true);
+    assert.equal(response.body.data.twoFactorRequired, true);
+    assert.equal(response.body.data.tokens, undefined);
+    assert.equal(saveCalled, false);
+    assert.equal(registeredSession, null);
+});
+
+test('POST /auth/login accepts a valid second factor and issues tokens', async (t) => {
+    let registeredSession = null;
+
+    const loginUser = createMockUser({
+        twoFactor: {
+            enabled: true,
+            secret: 'JBSWY3DPEHPK3PXP',
+            recoveryCodes: [],
+        },
+        registerSession(session) {
+            registeredSession = session;
+        },
+    });
+
+    const { app, cleanup } = createAuthRouteApp({ loginUser });
+    t.after(cleanup);
+
+    const response = await request(app)
+        .post('/auth/login')
+        .send({ username: 'mike', password: 'secret', totpToken: '123456' });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.success, true);
+    assert.equal(response.body.data.twoFactorRequired, undefined);
+    assert.equal(response.body.data.tokens.accessToken, 'access-token');
+    assert.equal(registeredSession.sessionId, 'session-1');
+});
+
 test('POST /auth/refresh returns the refreshed token envelope', async (t) => {
     let removedToken = null;
     let registeredSession = null;
@@ -149,4 +238,24 @@ test('POST /auth/refresh returns the refreshed token envelope', async (t) => {
     assert.equal(response.body.data.refreshToken, 'refresh-token');
     assert.equal(removedToken, 'stale-refresh-token');
     assert.equal(registeredSession.sessionId, 'session-1');
+});
+
+test('GET /auth/login-history returns history and entries aliases', async (t) => {
+    const loginHistoryEntries = [
+        {
+            _id: 'history-1',
+            method: 'password',
+            success: true,
+            createdAt: '2026-04-20T10:00:00.000Z',
+        },
+    ];
+
+    const { app, cleanup } = createAuthRouteApp({ loginHistoryEntries });
+    t.after(cleanup);
+
+    const response = await request(app).get('/auth/login-history');
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.data.history, loginHistoryEntries);
+    assert.deepEqual(response.body.data.entries, loginHistoryEntries);
 });

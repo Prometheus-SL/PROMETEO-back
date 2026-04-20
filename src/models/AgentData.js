@@ -57,10 +57,9 @@ const agentDataSchema = new mongoose.Schema({
 });
 
 // Índices para optimizar búsquedas
+agentDataSchema.index({ agentId: 1, dataType: 1, createdAt: -1 });
 agentDataSchema.index({ agentId: 1, createdAt: -1 });
-agentDataSchema.index({ dataType: 1 });
-agentDataSchema.index({ priority: 1 });
-agentDataSchema.index({ processed: 1 });
+agentDataSchema.index({ processed: 1, createdAt: -1 });
 agentDataSchema.index({ tags: 1 });
 
 // TTL para auto-eliminación de datos antiguos (30 días)

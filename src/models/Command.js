@@ -71,7 +71,7 @@ const commandSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['pending', 'sent', 'received', 'executing', 'completed', 'failed', 'timeout'],
+        enum: ['pending', 'sent', 'received', 'executing', 'completed', 'failed', 'timeout', 'cancelled'],
         default: 'pending'
     },
     sentAt: Date,
@@ -107,10 +107,9 @@ const commandSchema = new mongoose.Schema({
 });
 
 // Índices para optimizar búsquedas
+commandSchema.index({ agentId: 1, status: 1, scheduledFor: 1 });
 commandSchema.index({ agentId: 1, createdAt: -1 });
-commandSchema.index({ status: 1 });
-commandSchema.index({ priority: 1 });
-commandSchema.index({ sentBy: 1 });
+commandSchema.index({ sentBy: 1, createdAt: -1 });
 commandSchema.index({ scheduledFor: 1 });
 
 // TTL para auto-eliminación de comandos antiguos (90 días)
@@ -139,13 +138,46 @@ commandSchema.methods.markAsCompleted = function (response) {
     return this.save();
 };
 
+commandSchema.methods.cancel = function (reason) {
+    if (['completed', 'failed', 'timeout', 'cancelled'].includes(this.status)) {
+        return null;
+    }
+    this.status = 'cancelled';
+    this.completedAt = new Date();
+    this.response = { success: false, error: reason || 'Cancelled by user' };
+    return this.save();
+};
+
 // Método estático para obtener comandos pendientes de un agente
+const PRIORITY_ORDER = { urgent: 4, high: 3, normal: 2, low: 1 };
+
 commandSchema.statics.getPendingCommands = function (agentId) {
-    return this.find({
-        agentId,
-        status: { $in: ['pending', 'sent'] },
-        scheduledFor: { $lte: new Date() }
-    }).sort({ priority: -1, scheduledFor: 1 });
+    return this.aggregate([
+        {
+            $match: {
+                agentId,
+                status: { $in: ['pending', 'sent'] },
+                scheduledFor: { $lte: new Date() },
+            },
+        },
+        {
+            $addFields: {
+                priorityOrder: {
+                    $switch: {
+                        branches: [
+                            { case: { $eq: ['$priority', 'urgent'] }, then: 4 },
+                            { case: { $eq: ['$priority', 'high'] }, then: 3 },
+                            { case: { $eq: ['$priority', 'normal'] }, then: 2 },
+                            { case: { $eq: ['$priority', 'low'] }, then: 1 },
+                        ],
+                        default: 2,
+                    },
+                },
+            },
+        },
+        { $sort: { priorityOrder: -1, scheduledFor: 1 } },
+        { $project: { priorityOrder: 0 } },
+    ]);
 };
 
 module.exports = mongoose.model('Command', commandSchema);

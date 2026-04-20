@@ -579,12 +579,40 @@ async function playSpotifyTrack(user, uri) {
     await playSpotify(user, { uris: [uri] });
 }
 
+async function searchSpotify(user, query, types = 'track', limit = 20, offset = 0) {
+    const params = new URLSearchParams({
+        q: query,
+        type: types,
+        limit: String(Math.min(Math.max(Number(limit) || 20, 1), 50)),
+        offset: String(Math.max(Number(offset) || 0, 0)),
+    });
+    return spotifyApiRequest(user, `/search?${params}`);
+}
+
+async function getSpotifyPlaylists(user, limit = 20, offset = 0) {
+    const params = new URLSearchParams({
+        limit: String(Math.min(Math.max(Number(limit) || 20, 1), 50)),
+        offset: String(Math.max(Number(offset) || 0, 0)),
+    });
+    return spotifyApiRequest(user, `/me/playlists?${params}`);
+}
+
+async function getSpotifyPlaylistTracks(user, playlistId, limit = 50, offset = 0) {
+    const params = new URLSearchParams({
+        limit: String(Math.min(Math.max(Number(limit) || 50, 1), 50)),
+        offset: String(Math.max(Number(offset) || 0, 0)),
+    });
+    return spotifyApiRequest(user, `/playlists/${encodeURIComponent(playlistId)}/tracks?${params}`);
+}
+
 module.exports = {
     SPOTIFY_SCOPES,
     buildSpotifyAuthorizeUrl,
     completeSpotifyLink,
     disconnectSpotifyAccount,
     getSpotifyPlaybackState,
+    getSpotifyPlaylistTracks,
+    getSpotifyPlaylists,
     getSpotifyQueue,
     getSpotifyStatus,
     getSpotifyWebPlaybackToken,
@@ -593,6 +621,7 @@ module.exports = {
     playSpotify,
     playSpotifyTrack,
     previousSpotifyTrack,
+    searchSpotify,
     seekSpotify,
     setSpotifyRepeat,
     setSpotifyShuffle,

@@ -45,3 +45,38 @@ test('GET /api/v1/dashboard/pages returns the normalized success envelope', asyn
     assert.equal(response.body.success, true);
     assert.deepEqual(response.body.data.pages, pages);
 });
+
+test('PATCH /api/v1/dashboard/pages/:id does not deactivate other pages when the target does not exist', async (t) => {
+    let deactivateCalls = 0;
+
+    const { app, cleanup } = createRouteApp({
+        routePath: 'src/routes/dashboard.js',
+        mountPath: '/api/v1/dashboard',
+        mocks: {
+            'src/middleware/auth.js': {
+                authenticateToken(req, _res, next) {
+                    req.user = { _id: '507f1f77bcf86cd799439011', role: 'user' };
+                    next();
+                },
+                authorizeRole() {
+                    return (_req, _res, next) => next();
+                },
+            },
+            'src/models/DashboardPage.js': {
+                findOne: async () => null,
+                updateMany: async () => {
+                    deactivateCalls += 1;
+                },
+            },
+        },
+    });
+    t.after(cleanup);
+
+    const response = await request(app)
+        .patch('/api/v1/dashboard/pages/507f1f77bcf86cd799439012')
+        .send({ active: true });
+
+    assert.equal(response.status, 404);
+    assert.equal(response.body.error.code, 'PAGE_NOT_FOUND');
+    assert.equal(deactivateCalls, 0);
+});

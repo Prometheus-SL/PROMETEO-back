@@ -4,6 +4,7 @@ const { authenticateToken, authorizeRole } = require('../middleware/auth');
 const Agent = require('../models/Agent');
 const AgentData = require('../models/AgentData');
 const DashboardPage = require('../models/DashboardPage');
+const DashboardVersion = require('../models/DashboardVersion');
 const { asyncHandler } = require('../http/asyncHandler');
 const { created, ok } = require('../http/responses');
 const { createHttpError } = require('../http/errors');
@@ -125,15 +126,20 @@ router.get('/pages/active', authenticateToken, asyncHandler(async (req, res) => 
 
 router.get('/feed', authenticateToken, asyncHandler(async (req, res) => {
     const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 50);
-    const linkedAccountItems = buildLinkedAccountFeedItems(req.user);
+    const before = req.query.before ? new Date(req.query.before) : null;
+    const linkedAccountItems = before ? [] : buildLinkedAccountFeedItems(req.user);
     const agents = await resolveSortedResults(Agent.find(buildFeedAgentScope(req)), { lastSeen: -1, createdAt: -1 });
     const agentIds = Array.isArray(agents) ? agents.map((agent) => agent.agentId).filter(Boolean) : [];
     const agentMap = new Map((Array.isArray(agents) ? agents : []).map((agent) => [agent.agentId, agent]));
 
     let agentItems = [];
     if (agentIds.length > 0) {
+        const dataQuery = { agentId: { $in: agentIds } };
+        if (before && !Number.isNaN(before.getTime())) {
+            dataQuery.createdAt = { $lt: before };
+        }
         const recentAgentData = await resolveSortedResults(
-            AgentData.find({ agentId: { $in: agentIds } }),
+            AgentData.find(dataQuery),
             { createdAt: -1 },
             limit
         );
@@ -143,9 +149,12 @@ router.get('/feed', authenticateToken, asyncHandler(async (req, res) => {
     }
 
     const items = [...linkedAccountItems, ...agentItems].slice(0, limit);
+    const lastItem = items[items.length - 1];
+    const nextCursor = lastItem?.createdAt ? new Date(lastItem.createdAt).toISOString() : null;
 
     return ok(res, {
         items,
+        nextCursor,
         summary: {
             total: items.length,
             linkedAccounts: linkedAccountItems.length,
@@ -182,14 +191,16 @@ router.post('/pages', authenticateToken, asyncHandler(async (req, res) => {
         order,
         updatedBy: req.user._id,
     });
-    await page.save();
 
     if (page.active) {
+        // Deactivate others first, then save — ensures at most one active page
         await DashboardPage.updateMany(
-            { user: req.user._id, _id: { $ne: page._id } },
+            { user: req.user._id },
             { $set: { active: false } }
         );
     }
+
+    await page.save();
 
     return created(res, { page }, { message: 'Page created' });
 }));
@@ -216,20 +227,18 @@ router.patch('/pages/:id', authenticateToken, asyncHandler(async (req, res) => {
     }
     updates.updatedBy = req.user._id;
 
-    const page = await DashboardPage.findOneAndUpdate(
-        { _id: req.params.id, user: req.user._id },
-        { $set: updates },
-        { new: true, runValidators: true }
-    );
-    if (!page) {
-        throw createHttpError(404, 'PAGE_NOT_FOUND', 'Page not found');
-    }
+    const page = await findOwnedPage(req.params.id, req.user._id);
 
     if (updates.active === true) {
         await DashboardPage.updateMany(
-            { user: req.user._id, _id: { $ne: page._id } },
+            { user: req.user._id, _id: { $ne: req.params.id } },
             { $set: { active: false } }
         );
+    }
+
+    Object.assign(page, updates);
+    if (typeof page.save === 'function') {
+        await page.save();
     }
 
     return ok(res, { page }, { message: 'Page updated' });
@@ -377,6 +386,128 @@ router.put('/pages/:id/style', authenticateToken, asyncHandler(async (req, res) 
     }
 
     return ok(res, { page }, { message: 'Style updated' });
+}));
+
+/* ─── Dashboard Templates ─── */
+
+const DASHBOARD_TEMPLATES = [
+    {
+        id: 'monitoring',
+        name: 'System Monitoring',
+        description: 'Default template for monitoring agents with CPU, memory, and disk widgets.',
+        modules: [
+            { meta: { id: 'system-status', name: 'System Status', entry: 'SystemStatus', category: 'monitoring' }, position: { x: 0, y: 0, w: 2, h: 2 } },
+            { meta: { id: 'cpu-chart', name: 'CPU Chart', entry: 'CpuChart', category: 'monitoring' }, position: { x: 2, y: 0, w: 2, h: 1 } },
+            { meta: { id: 'memory-chart', name: 'Memory Chart', entry: 'MemoryChart', category: 'monitoring' }, position: { x: 2, y: 1, w: 2, h: 1 } },
+        ],
+        style: { theme: 'default' },
+    },
+    {
+        id: 'media-control',
+        name: 'Media Control',
+        description: 'Template focused on media playback and audio control.',
+        modules: [
+            { meta: { id: 'media-player', name: 'Media Player', entry: 'MediaPlayer', category: 'media' }, position: { x: 0, y: 0, w: 4, h: 2 } },
+            { meta: { id: 'volume-control', name: 'Volume Control', entry: 'VolumeControl', category: 'media' }, position: { x: 0, y: 2, w: 2, h: 1 } },
+        ],
+        style: { theme: 'dark' },
+    },
+    {
+        id: 'blank',
+        name: 'Blank',
+        description: 'Empty dashboard to build from scratch.',
+        modules: [],
+        style: {},
+    },
+];
+
+router.get('/templates', authenticateToken, asyncHandler(async (_req, res) => {
+    return ok(res, { templates: DASHBOARD_TEMPLATES });
+}));
+
+router.post('/pages/from-template', authenticateToken, asyncHandler(async (req, res) => {
+    const { templateId, name, slug } = req.body || {};
+    const template = DASHBOARD_TEMPLATES.find((t) => t.id === templateId);
+    if (!template) {
+        throw createHttpError(404, 'TEMPLATE_NOT_FOUND', 'Template not found');
+    }
+
+    const last = await DashboardPage.findOne({ user: req.user._id }).sort({ order: -1 });
+    const order = last ? (last.order + 1) : 0;
+
+    const page = new DashboardPage({
+        user: req.user._id,
+        name: name || template.name,
+        slug: slug || undefined,
+        description: template.description,
+        style: template.style,
+        modules: template.modules,
+        order,
+        updatedBy: req.user._id,
+    });
+    await page.save();
+
+    return created(res, { page }, { message: 'Page created from template' });
+}));
+
+/* ─── Version History ─── */
+
+router.get('/pages/:id/versions', authenticateToken, asyncHandler(async (req, res) => {
+    assertValidId(req.params.id);
+    await findOwnedPage(req.params.id, req.user._id);
+
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+    const versions = await DashboardVersion.find({ pageId: req.params.id })
+        .sort({ version: -1 })
+        .limit(limit)
+        .lean();
+
+    return ok(res, { versions });
+}));
+
+router.post('/pages/:id/versions', authenticateToken, asyncHandler(async (req, res) => {
+    assertValidId(req.params.id);
+    const page = await findOwnedPage(req.params.id, req.user._id);
+
+    const lastVersion = await DashboardVersion.findOne({ pageId: page._id }).sort({ version: -1 });
+    const nextVersion = lastVersion ? lastVersion.version + 1 : 1;
+
+    const version = await DashboardVersion.create({
+        pageId: page._id,
+        user: req.user._id,
+        version: nextVersion,
+        snapshot: {
+            name: page.name,
+            slug: page.slug,
+            description: page.description,
+            style: page.style,
+            modules: page.modules,
+        },
+        changedBy: req.user._id,
+    });
+
+    return created(res, { version }, { message: 'Version saved' });
+}));
+
+router.post('/pages/:id/versions/:versionId/restore', authenticateToken, asyncHandler(async (req, res) => {
+    assertValidId(req.params.id);
+    assertValidId(req.params.versionId, 'Invalid version id');
+
+    const page = await findOwnedPage(req.params.id, req.user._id);
+    const version = await DashboardVersion.findOne({ _id: req.params.versionId, pageId: page._id });
+    if (!version) {
+        throw createHttpError(404, 'VERSION_NOT_FOUND', 'Version not found');
+    }
+
+    page.name = version.snapshot.name;
+    page.slug = version.snapshot.slug;
+    page.description = version.snapshot.description;
+    page.style = version.snapshot.style;
+    page.modules = version.snapshot.modules;
+    page.updatedBy = req.user._id;
+    await page.save();
+
+    return ok(res, { page }, { message: 'Page restored from version' });
 }));
 
 module.exports = router;

@@ -399,4 +399,18 @@ router.get('/agents/:agentId/stats', authenticateToken, authorizeRole('admin', '
     });
 }));
 
+router.post('/agents/batch/status', authenticateToken, authorizeRole('admin', 'operator'), asyncHandler(async (req, res) => {
+    const { agentIds, isActive } = req.body || {};
+    if (!Array.isArray(agentIds) || agentIds.length === 0 || typeof isActive !== 'boolean') {
+        throw createHttpError(400, 'BATCH_PAYLOAD_INVALID', 'agentIds (array) and isActive (boolean) are required');
+    }
+
+    const result = await Agent.updateMany(
+        { agentId: { $in: agentIds } },
+        { $set: { isActive } }
+    );
+
+    return ok(res, { modified: result.modifiedCount, total: agentIds.length }, { message: 'Batch agent status updated' });
+}));
+
 module.exports = router;

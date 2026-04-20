@@ -9,6 +9,7 @@ const AgentData = require('./models/AgentData');
 const Command = require('./models/Command');
 const { verifyAccessToken } = require('./middleware/auth');
 const { initBot: initDiscordBot } = require('./services/discord/client');
+const { setIo } = require('./services/notifications');
 
 const PORT = process.env.PORT || 3000;
 
@@ -32,6 +33,32 @@ const agentState = {
     latestDataByAgent: new Map()
 };
 const MANUAL_AGENT_MODES = new Set(['manual', 'interactive']);
+
+// ── Socket.io per-socket rate limiting ──
+const SOCKET_RATE_LIMIT_WINDOW_MS = 10_000; // 10 seconds
+const SOCKET_RATE_LIMIT_MAX_EVENTS = 100;   // max events per window
+
+function createSocketRateLimiter() {
+    const counters = new WeakMap();
+
+    return function socketRateLimiter(socket, next) {
+        let entry = counters.get(socket);
+        const now = Date.now();
+
+        if (!entry || now - entry.windowStart >= SOCKET_RATE_LIMIT_WINDOW_MS) {
+            entry = { windowStart: now, count: 0 };
+            counters.set(socket, entry);
+        }
+
+        entry.count += 1;
+
+        if (entry.count > SOCKET_RATE_LIMIT_MAX_EVENTS) {
+            return next(new Error('RATE_LIMIT_EXCEEDED'));
+        }
+
+        next();
+    };
+}
 
 function isPrivilegedUser(user) {
     return ['admin', 'operator'].includes(user?.role);
@@ -152,30 +179,53 @@ function emitToAuthorizedFrontends(event, payload, ownerUserId) {
 }
 
 async function attachAgentOwnership(userId, agentId) {
-    let agentDoc = await Agent.findOne({ agentId });
-    if (!agentDoc) {
-        agentDoc = new Agent({
-            agentId,
-            name: agentId,
-            description: 'Agente creado desde socket',
-            apiKey: randomBytes(32).toString('hex'),
-            user: userId,
-            status: 'offline'
-        });
-        await agentDoc.save();
-        return agentDoc;
-    }
+    // Atomic upsert: create if not exists, otherwise return existing doc
+    const agentDoc = await Agent.findOneAndUpdate(
+        { agentId },
+        {
+            $setOnInsert: {
+                agentId,
+                name: agentId,
+                description: 'Agente creado desde socket',
+                apiKey: randomBytes(32).toString('hex'),
+                user: userId,
+                status: 'offline'
+            }
+        },
+        { upsert: true, new: true }
+    );
 
     if (!agentDoc.isActive) {
-        const error = new Error('El agente estÃ¡ desactivado');
+        const error = new Error('El agente está desactivado');
         error.status = 403;
         throw error;
     }
 
     if (!agentDoc.user) {
-        agentDoc.user = userId;
-        await agentDoc.save();
-        return agentDoc;
+        const claimedAgent = await Agent.findOneAndUpdate(
+            {
+                agentId,
+                $or: [
+                    { user: { $exists: false } },
+                    { user: null }
+                ]
+            },
+            { $set: { user: userId } },
+            { new: true }
+        );
+
+        if (claimedAgent) {
+            return claimedAgent;
+        }
+
+        const latestAgent = await Agent.findOne({ agentId });
+        if (latestAgent?.user && String(latestAgent.user) !== String(userId)) {
+            const error = new Error('Este agente pertenece a otro usuario');
+            error.status = 403;
+            throw error;
+        }
+
+        return latestAgent || agentDoc;
     }
 
     if (String(agentDoc.user) !== String(userId)) {
@@ -195,12 +245,25 @@ io.on('connection', (socket) => {
     socket.data.clientType = 'unknown';
     socket.data.isAuthenticatedAgent = false;
 
+    // Per-socket rate limiting on incoming events
+    const rateLimiter = createSocketRateLimiter();
+    socket.use((packet, next) => rateLimiter(socket, next));
+
     console.log(`Cliente conectado: ${socket.id}`);
 
     socket.on('identify', async (data = {}) => {
         const { type, agentId, token, mode } = data || {};
 
+        if (!type || typeof type !== 'string' || !['agent', 'frontend'].includes(type)) {
+            socket.emit('error', { message: 'Tipo de cliente no soportado' });
+            return;
+        }
+
         if (type === 'agent') {
+            if (agentId && (typeof agentId !== 'string' || agentId.length > 128)) {
+                socket.emit('error', { message: 'agentId inválido' });
+                return;
+            }
             const finalAgentId = agentId || socket.id;
 
             try {
@@ -274,6 +337,26 @@ io.on('connection', (socket) => {
     socket.on('agent-data', async (data = {}) => {
         if (socket.data?.clientType !== 'agent' || !socket.data?.isAuthenticatedAgent || !socket.agentId) {
             socket.emit('error', { message: 'Agente no autenticado' });
+            return;
+        }
+
+        if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+            socket.emit('error', { message: 'Payload debe ser un objeto' });
+            return;
+        }
+
+        if (data.dataType && typeof data.dataType !== 'string') {
+            socket.emit('error', { message: 'dataType debe ser un string' });
+            return;
+        }
+
+        if (data.priority && !['low', 'normal', 'high', 'critical'].includes(data.priority)) {
+            socket.emit('error', { message: 'priority inválido' });
+            return;
+        }
+
+        if (data.tags !== undefined && !Array.isArray(data.tags)) {
+            socket.emit('error', { message: 'tags debe ser un array' });
             return;
         }
 
@@ -363,6 +446,10 @@ io.on('connection', (socket) => {
             return;
         }
 
+        if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+            return;
+        }
+
         try {
             const { commandId, success, result, error, executionTime } = data;
             if (!commandId) return;
@@ -403,6 +490,13 @@ io.on('connection', (socket) => {
         const agent = agentState.connectedAgents.get(socket.id);
         agentState.connectedAgents.delete(socket.id);
 
+        // Clean up latestDataByAgent if no other socket is connected for this agent
+        const agentStillConnected = Array.from(agentState.connectedAgents.values())
+            .some((entry) => entry.agentId === agent.agentId);
+        if (!agentStillConnected) {
+            agentState.latestDataByAgent.delete(agent.agentId);
+        }
+
         emitToAuthorizedFrontends('agent-disconnected', {
             agentId: agent.agentId,
             disconnectedAt: new Date()
@@ -429,6 +523,7 @@ io.on('connection', (socket) => {
 });
 
 app.set('io', io);
+setIo(io);
 
 server.listen(PORT, () => {
     console.log(`Servidor PROMETEO funcionando en puerto ${PORT}`);

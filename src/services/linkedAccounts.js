@@ -41,7 +41,7 @@ function getConfiguredOrigins() {
 function isAllowedOrigin(origin) {
     const configuredOrigins = getConfiguredOrigins();
     if (!origin) return false;
-    if (configuredOrigins.length === 0) return true;
+    if (configuredOrigins.length === 0) return false;
     return configuredOrigins.includes(origin);
 }
 
@@ -80,9 +80,22 @@ function getEncryptionKey() {
     return crypto.createHash('sha256').update(getEncryptionSecret()).digest();
 }
 
+const PBKDF2_SALT = 'prometeo-linked-accounts-v2';
+const PBKDF2_ITERATIONS = 100_000;
+
+function getEncryptionKeyV2() {
+    return crypto.pbkdf2Sync(
+        getEncryptionSecret(),
+        PBKDF2_SALT,
+        PBKDF2_ITERATIONS,
+        32,
+        'sha512'
+    );
+}
+
 function encryptLinkedAccountPayload(payload) {
     const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv('aes-256-gcm', getEncryptionKey(), iv);
+    const cipher = crypto.createCipheriv('aes-256-gcm', getEncryptionKeyV2(), iv);
 
     const plaintext = JSON.stringify(payload);
     const ciphertext = Buffer.concat([
@@ -95,7 +108,7 @@ function encryptLinkedAccountPayload(payload) {
         iv: iv.toString('base64'),
         tag: cipher.getAuthTag().toString('base64'),
         ciphertext: ciphertext.toString('base64'),
-        version: 1,
+        version: 2,
     };
 }
 
@@ -108,10 +121,13 @@ function decryptLinkedAccountPayload(payload) {
         );
     }
 
+    const version = payload.version || 1;
+    const key = version >= 2 ? getEncryptionKeyV2() : getEncryptionKey();
+
     try {
         const decipher = crypto.createDecipheriv(
             'aes-256-gcm',
-            getEncryptionKey(),
+            key,
             Buffer.from(payload.iv, 'base64')
         );
         decipher.setAuthTag(Buffer.from(payload.tag, 'base64'));

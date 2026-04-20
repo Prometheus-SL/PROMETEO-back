@@ -4,6 +4,58 @@ const request = require('supertest');
 
 const { createRouteApp } = require('./helpers/routeApp');
 
+function createMutationRouteApp({ user, modelUser = user, findOne = async () => null } = {}) {
+    return createRouteApp({
+        routePath: 'src/routes/account.js',
+        mountPath: '/api/v1/account',
+        mocks: {
+            'src/middleware/auth.js': {
+                authenticateToken(req, _res, next) {
+                    req.user = user;
+                    req.auth = { sessionId: 'session-1' };
+                    next();
+                },
+            },
+            'src/models/User.js': {
+                findById: () => ({
+                    select: async () => modelUser,
+                    then: (resolve, reject) => Promise.resolve(modelUser).then(resolve, reject),
+                }),
+                findOne,
+            },
+            'src/services/spotifyIntegration.js': {
+                buildSpotifyAuthorizeUrl: () => '',
+                completeSpotifyLink: async () => null,
+                disconnectSpotifyAccount: async () => null,
+            },
+            'src/services/discordIntegration.js': {
+                buildDiscordAuthorizeUrl: () => '',
+                completeDiscordLink: async () => null,
+                disconnectDiscordAccount: async () => null,
+            },
+            'src/services/googleIntegration.js': {
+                buildGoogleAuthorizeUrl: () => '',
+                completeGoogleLink: async () => null,
+                disconnectGoogleAccount: async () => null,
+            },
+            'src/services/githubIntegration.js': {
+                buildGithubAuthorizeUrl: () => '',
+                completeGithubLink: async () => null,
+                disconnectGithubAccount: async () => null,
+            },
+            'src/services/creatorIntegration.js': {
+                getCreatorStatus: async () => ({
+                    status: 'disconnected',
+                    profile: null,
+                    connectedAt: null,
+                    scopes: [],
+                    lastError: null,
+                }),
+            },
+        },
+    });
+}
+
 test('GET /api/v1/account returns the normalized account payload', async (t) => {
     const user = {
         _id: 'user-1',
@@ -196,4 +248,66 @@ test('GET /api/v1/account/providers returns the provider registry with live stat
     assert.equal(response.body.data.providers[3].id, 'github');
     assert.equal(response.body.data.providers[4].id, 'creator');
     assert.equal(response.body.data.providers[4].connectSupported, false);
+});
+
+test('PATCH /api/v1/account/profile updates editable profile fields', async (t) => {
+    let saveCalled = false;
+    const user = {
+        _id: 'user-1',
+        username: 'mike',
+        email: 'mike@example.com',
+        role: 'user',
+        name: 'Mike',
+        surname: 'Stone',
+        birthday: null,
+        linkedAccounts: {},
+        save: async () => {
+            saveCalled = true;
+        },
+    };
+    const { app, cleanup } = createMutationRouteApp({ user });
+    t.after(cleanup);
+
+    const response = await request(app)
+        .patch('/api/v1/account/profile')
+        .send({
+            username: 'miguel',
+            name: 'Miguel',
+            surname: 'Perez',
+        });
+
+    assert.equal(response.status, 200);
+    assert.equal(saveCalled, true);
+    assert.equal(user.username, 'miguel');
+    assert.equal(user.name, 'Miguel');
+    assert.equal(user.surname, 'Perez');
+    assert.equal(response.body.data.user.username, 'miguel');
+});
+
+test('POST /api/v1/account/password changes password after current password check', async (t) => {
+    let saveCalled = false;
+    const user = {
+        _id: 'user-1',
+        username: 'mike',
+        email: 'mike@example.com',
+        role: 'user',
+        linkedAccounts: {},
+        matchPassword: async (password) => password === 'current-password-123',
+        save: async () => {
+            saveCalled = true;
+        },
+    };
+    const { app, cleanup } = createMutationRouteApp({ user });
+    t.after(cleanup);
+
+    const response = await request(app)
+        .post('/api/v1/account/password')
+        .send({
+            currentPassword: 'current-password-123',
+            newPassword: 'new-strong-password-123',
+        });
+
+    assert.equal(response.status, 200);
+    assert.equal(saveCalled, true);
+    assert.equal(user.password, 'new-strong-password-123');
 });

@@ -1,8 +1,27 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const validator = require('validator');
 
 const MAX_ACTIVE_SESSIONS = 20;
+
+function hashRefreshToken(token) {
+    return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+function refreshTokenMatches(storedToken, candidateToken) {
+    if (!storedToken || !candidateToken) return false;
+    const candidateHash = hashRefreshToken(candidateToken);
+    try {
+        return crypto.timingSafeEqual(
+            Buffer.from(storedToken, 'utf8'),
+            Buffer.from(candidateHash, 'utf8')
+        );
+    } catch (_error) {
+        // Length mismatch means legacy plaintext token — compare directly
+        return storedToken === candidateToken;
+    }
+}
 
 const sessionSchema = new mongoose.Schema({
     token: {
@@ -336,7 +355,7 @@ const userSchema = new mongoose.Schema({
     password: {
         type: String,
         required: [true, 'Password es requerido'],
-        minlength: [6, 'Password debe tener al menos 6 caracteres'],
+        minlength: [12, 'Password debe tener al menos 12 caracteres'],
         select: false,
     },
     role: {
@@ -361,6 +380,10 @@ const userSchema = new mongoose.Schema({
         type: Boolean,
         default: true,
     },
+    emailVerified: {
+        type: Boolean,
+        default: false,
+    },
     lastLogin: {
         type: Date,
     },
@@ -375,6 +398,12 @@ const userSchema = new mongoose.Schema({
     linkedAccounts: {
         type: linkedAccountsSchema,
         default: () => ({}),
+    },
+    twoFactor: {
+        enabled: { type: Boolean, default: false },
+        secret: { type: String, select: false },
+        recoveryCodes: { type: [String], select: false, default: [] },
+        enabledAt: { type: Date, default: null },
     },
 }, {
     timestamps: true,
@@ -410,7 +439,7 @@ userSchema.methods.registerSession = function ({
     });
 
     nextSessions.push({
-        token: refreshToken,
+        token: hashRefreshToken(refreshToken),
         sessionId: sessionId || undefined,
         createdAt,
         lastUsedAt: createdAt,
@@ -438,7 +467,7 @@ userSchema.methods.hasRefreshToken = function (refreshToken, sessionId = null) {
     return this.refreshTokens.some((session) => {
         if (!session) return false;
         if (sessionId && session.sessionId !== sessionId) return false;
-        return session.token === refreshToken;
+        return refreshTokenMatches(session.token, refreshToken);
     });
 };
 
@@ -459,7 +488,9 @@ userSchema.methods.removeSessionBySessionId = function (sessionId) {
 
 userSchema.methods.removeSessionByRefreshToken = function (refreshToken) {
     if (!refreshToken) return this;
-    this.refreshTokens = this.refreshTokens.filter((session) => session?.token !== refreshToken);
+    this.refreshTokens = this.refreshTokens.filter(
+        (session) => !refreshTokenMatches(session?.token, refreshToken)
+    );
     return this;
 };
 

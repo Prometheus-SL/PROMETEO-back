@@ -5,6 +5,8 @@ const { createHttpError } = require('../http/errors');
 const { ok } = require('../http/responses');
 const {
     getSpotifyPlaybackState,
+    getSpotifyPlaylistTracks,
+    getSpotifyPlaylists,
     getSpotifyQueue,
     getSpotifyStatus,
     getSpotifyWebPlaybackToken,
@@ -13,6 +15,7 @@ const {
     playSpotify,
     playSpotifyTrack,
     previousSpotifyTrack,
+    searchSpotify,
     seekSpotify,
     setSpotifyRepeat,
     setSpotifyShuffle,
@@ -120,6 +123,24 @@ router.put('/player/repeat', authenticateToken, asyncHandler(async (req, res) =>
 
     await setSpotifyRepeat(req.user, state);
     return ok(res, null, { message: 'Repeat updated.' });
+}));
+
+router.get('/search', authenticateToken, asyncHandler(async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    if (!q) throw createHttpError(400, 'SPOTIFY_SEARCH_QUERY_REQUIRED', 'q is required.');
+    const types = String(req.query.type || 'track');
+    const results = await searchSpotify(req.user, q, types, req.query.limit, req.query.offset);
+    return ok(res, results);
+}));
+
+router.get('/playlists', authenticateToken, asyncHandler(async (req, res) => {
+    const playlists = await getSpotifyPlaylists(req.user, req.query.limit, req.query.offset);
+    return ok(res, playlists);
+}));
+
+router.get('/playlists/:playlistId/tracks', authenticateToken, asyncHandler(async (req, res) => {
+    const tracks = await getSpotifyPlaylistTracks(req.user, req.params.playlistId, req.query.limit, req.query.offset);
+    return ok(res, tracks);
 }));
 
 module.exports = router;

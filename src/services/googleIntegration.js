@@ -25,6 +25,22 @@ const GOOGLE_SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
 ];
 
+const _googleCache = new Map();
+const GOOGLE_CACHE_TTL_MS = 60_000;
+
+function _getGoogleCached(key) {
+    const entry = _googleCache.get(key);
+    if (!entry || Date.now() - entry.ts > GOOGLE_CACHE_TTL_MS) {
+        _googleCache.delete(key);
+        return undefined;
+    }
+    return entry.value;
+}
+
+function _setGoogleCache(key, value) {
+    _googleCache.set(key, { value, ts: Date.now() });
+}
+
 function assertGoogleConfigured() {
     const clientId = String(process.env.GOOGLE_CLIENT_ID || '').trim();
     const clientSecret = String(process.env.GOOGLE_CLIENT_SECRET || '').trim();
@@ -477,9 +493,10 @@ function compareDatesAsc(leftValue, rightValue) {
 
 async function getGoogleCalendarAgenda(user, options = {}) {
     const limit = Math.max(1, Math.min(12, Number(options.limit) || 6));
+    const calendarId = options.calendarId || 'primary';
     const now = new Date();
     const timeMax = new Date(Date.now() + (Number(options.horizonDays) || 7) * 24 * 60 * 60 * 1000);
-    const url = new URL(`${GOOGLE_CALENDAR_API_BASE_URL}/calendars/primary/events`);
+    const url = new URL(`${GOOGLE_CALENDAR_API_BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events`);
     url.searchParams.set('maxResults', String(limit));
     url.searchParams.set('singleEvents', 'true');
     url.searchParams.set('orderBy', 'startTime');
@@ -566,17 +583,19 @@ async function getGoogleTasksSummary(user, options = {}) {
 
     const taskListsPayload = await googleApiRequest(user, taskListsUrl.toString());
     const taskLists = Array.isArray(taskListsPayload?.items) ? taskListsPayload.items : [];
-    const items = [];
 
-    for (const taskList of taskLists.slice(0, taskListsLimit)) {
-        const tasksUrl = new URL(`${GOOGLE_TASKS_API_BASE_URL}/lists/${encodeURIComponent(taskList.id)}/tasks`);
-        tasksUrl.searchParams.set('showCompleted', 'false');
-        tasksUrl.searchParams.set('showHidden', 'false');
-        tasksUrl.searchParams.set('maxResults', String(itemsLimit));
-        const tasksPayload = await googleApiRequest(user, tasksUrl.toString());
-        const taskItems = Array.isArray(tasksPayload?.items) ? tasksPayload.items : [];
-        items.push(...taskItems.map((task) => serializeGoogleTask(task, taskList.id, taskList.title)));
-    }
+    const itemBatches = await Promise.all(
+        taskLists.slice(0, taskListsLimit).map(async (taskList) => {
+            const tasksUrl = new URL(`${GOOGLE_TASKS_API_BASE_URL}/lists/${encodeURIComponent(taskList.id)}/tasks`);
+            tasksUrl.searchParams.set('showCompleted', 'false');
+            tasksUrl.searchParams.set('showHidden', 'false');
+            tasksUrl.searchParams.set('maxResults', String(itemsLimit));
+            const tasksPayload = await googleApiRequest(user, tasksUrl.toString());
+            const taskItems = Array.isArray(tasksPayload?.items) ? tasksPayload.items : [];
+            return taskItems.map((task) => serializeGoogleTask(task, taskList.id, taskList.title));
+        })
+    );
+    const items = itemBatches.flat();
 
     const now = new Date();
     const sortedItems = items
@@ -623,17 +642,18 @@ async function getGoogleInboxSummary(user, options = {}) {
 
     const messagesPayload = await googleApiRequest(user, messagesUrl.toString());
     const messages = Array.isArray(messagesPayload?.messages) ? messagesPayload.messages : [];
-    const items = [];
 
-    for (const message of messages.slice(0, itemsLimit)) {
-        const detailsUrl = new URL(`${GOOGLE_GMAIL_API_BASE_URL}/users/me/messages/${encodeURIComponent(message.id)}`);
-        detailsUrl.searchParams.set('format', 'metadata');
-        detailsUrl.searchParams.append('metadataHeaders', 'From');
-        detailsUrl.searchParams.append('metadataHeaders', 'Subject');
-        detailsUrl.searchParams.append('metadataHeaders', 'Date');
-        const details = await googleApiRequest(user, detailsUrl.toString());
-        items.push(serializeGoogleInboxMessage(message, details));
-    }
+    const items = await Promise.all(
+        messages.slice(0, itemsLimit).map(async (message) => {
+            const detailsUrl = new URL(`${GOOGLE_GMAIL_API_BASE_URL}/users/me/messages/${encodeURIComponent(message.id)}`);
+            detailsUrl.searchParams.set('format', 'metadata');
+            detailsUrl.searchParams.append('metadataHeaders', 'From');
+            detailsUrl.searchParams.append('metadataHeaders', 'Subject');
+            detailsUrl.searchParams.append('metadataHeaders', 'Date');
+            const details = await googleApiRequest(user, detailsUrl.toString());
+            return serializeGoogleInboxMessage(message, details);
+        })
+    );
 
     return {
         unreadCount: Number(unreadLabel?.messagesUnread) || items.length,
@@ -690,6 +710,11 @@ function createGoogleSectionFallback(baseSection, error) {
 }
 
 async function getGoogleWorkspaceSummary(user, options = {}) {
+    const userId = String(user?._id || '');
+    const cacheKey = `workspace:${userId}`;
+    const cached = _getGoogleCached(cacheKey);
+    if (cached) return cached;
+
     const provider = parseGoogleStatus(user?.linkedAccounts?.google);
     const disconnectedMessage = provider.status === 'reauth_required'
         ? 'Reconnect Google Workspace from Account to restore all widgets.'
@@ -729,40 +754,44 @@ async function getGoogleWorkspaceSummary(user, options = {}) {
         };
     }
 
-    const calendar = await getGoogleCalendarAgenda(user, options.calendar || {})
-        .catch((error) => createGoogleSectionFallback({
-            busyNow: false,
-            activeEventId: null,
-            nextStartAt: null,
-            nextEndAt: null,
-            items: [],
-        }, error));
-    const tasks = await getGoogleTasksSummary(user, options.tasks || {})
-        .catch((error) => createGoogleSectionFallback({
-            taskLists: [],
-            items: [],
-            dueTodayCount: 0,
-            overdueCount: 0,
-        }, error));
-    const inbox = await getGoogleInboxSummary(user, options.inbox || {})
-        .catch((error) => createGoogleSectionFallback({
-            unreadCount: 0,
-            threadUnreadCount: 0,
-            items: [],
-        }, error));
+    const [calendar, tasks, inbox] = await Promise.all([
+        getGoogleCalendarAgenda(user, options.calendar || {})
+            .catch((error) => createGoogleSectionFallback({
+                busyNow: false,
+                activeEventId: null,
+                nextStartAt: null,
+                nextEndAt: null,
+                items: [],
+            }, error)),
+        getGoogleTasksSummary(user, options.tasks || {})
+            .catch((error) => createGoogleSectionFallback({
+                taskLists: [],
+                items: [],
+                dueTodayCount: 0,
+                overdueCount: 0,
+            }, error)),
+        getGoogleInboxSummary(user, options.inbox || {})
+            .catch((error) => createGoogleSectionFallback({
+                unreadCount: 0,
+                threadUnreadCount: 0,
+                items: [],
+            }, error)),
+    ]);
     const focus = buildGoogleFocusSummary(calendar, tasks, inbox);
 
     if (calendar.error || tasks.error || inbox.error) {
         focus.error = calendar.error || tasks.error || inbox.error;
     }
 
-    return {
+    const result = {
         provider,
         calendar,
         tasks,
         inbox,
         focus,
     };
+    _setGoogleCache(cacheKey, result);
+    return result;
 }
 
 async function completeGoogleTask(user, taskListId, taskId) {

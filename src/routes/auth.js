@@ -1,9 +1,11 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
-const { randomBytes, randomUUID } = require('crypto');
+const crypto = require('crypto');
+const { randomBytes, randomUUID } = crypto;
 const User = require('../models/User');
 const Agent = require('../models/Agent');
 const QRCodeModel = require('../models/QRCode');
+const EmailToken = require('../models/EmailToken');
 const {
     authenticateToken,
     authorizeRole,
@@ -13,6 +15,15 @@ const {
 const { asyncHandler } = require('../http/asyncHandler');
 const { createHttpError } = require('../http/errors');
 const { created, ok } = require('../http/responses');
+const {
+    isEmailServiceAvailable,
+    generateSecureToken,
+    hashToken,
+    sendVerificationEmail,
+    sendPasswordResetEmail,
+} = require('../services/emailService');
+const LoginHistory = require('../models/LoginHistory');
+const { generateSecret, verifyTOTP, buildOtpauthUri, generateRecoveryCodes } = require('../services/totp');
 
 const router = express.Router();
 
@@ -44,12 +55,33 @@ const registerLimiter = rateLimit({
     legacyHeaders: false,
 });
 
+const COMMON_PASSWORDS = new Set([
+    'password1234', 'password12345', 'password123456',
+    '123456789012', '1234567890123', '12345678901234',
+    'qwerty123456', 'qwertyuiopas', 'qwertyuiop12',
+    'letmein12345', 'welcome12345', 'admin1234567',
+    'iloveyou1234', 'monkey123456', 'dragon123456',
+    'master123456', 'trustno12345', 'baseball1234',
+    'shadow123456', 'michael12345', 'football1234',
+    'changeme1234', 'password!234', 'abcdef123456',
+    'abcdefghijkl', 'aaaaaaaaaaaa', '111111111111',
+    '000000000000', 'passwordpass', 'passpasspass',
+]);
+
+function isCommonPassword(password) {
+    return COMMON_PASSWORDS.has(password.toLowerCase());
+}
+
 function normalizeText(value) {
     return String(value || '').trim();
 }
 
 function normalizeEmail(value) {
     return normalizeText(value).toLowerCase();
+}
+
+function normalizeSecondFactorToken(value) {
+    return normalizeText(value).replace(/\s+/g, '').toUpperCase();
 }
 
 function getRequestMetadata(req) {
@@ -98,6 +130,66 @@ function registerIssuedSession(user, tokens, req, options = {}) {
     return user;
 }
 
+function recordLogin(userId, username, req, overrides = {}) {
+    const meta = getRequestMetadata(req);
+    LoginHistory.create({
+        userId,
+        username,
+        method: overrides.method || 'password',
+        success: overrides.success !== undefined ? overrides.success : true,
+        ip: meta.ip,
+        userAgent: meta.userAgent,
+        sessionId: overrides.sessionId || null,
+        failureReason: overrides.failureReason || null,
+    }).catch(() => { });
+}
+
+function isTwoFactorEnabled(user) {
+    return Boolean(user.twoFactor?.enabled);
+}
+
+function consumeRecoveryCode(user, token) {
+    const normalizedToken = normalizeSecondFactorToken(token).replace(/[^A-Z0-9]/g, '');
+    if (!normalizedToken) {
+        return false;
+    }
+
+    const hash = crypto.createHash('sha256').update(normalizedToken).digest('hex');
+    const recoveryCodes = Array.isArray(user.twoFactor?.recoveryCodes)
+        ? user.twoFactor.recoveryCodes
+        : [];
+    const index = recoveryCodes.findIndex((storedHash) => {
+        try {
+            return crypto.timingSafeEqual(
+                Buffer.from(storedHash, 'utf8'),
+                Buffer.from(hash, 'utf8')
+            );
+        } catch (_error) {
+            return storedHash === hash;
+        }
+    });
+
+    if (index === -1) {
+        return false;
+    }
+
+    user.twoFactor.recoveryCodes.splice(index, 1);
+    return true;
+}
+
+function verifySecondFactor(user, token) {
+    const normalizedToken = normalizeSecondFactorToken(token);
+    if (!normalizedToken || !user.twoFactor?.secret) {
+        return false;
+    }
+
+    if (/^\d{6}$/.test(normalizedToken) && verifyTOTP(user.twoFactor.secret, normalizedToken)) {
+        return true;
+    }
+
+    return consumeRecoveryCode(user, normalizedToken);
+}
+
 async function issueSessionTokens(user, req, options = {}) {
     const tokens = generateTokens(user, { sessionId: options.sessionId });
     registerIssuedSession(user, tokens, req, options);
@@ -117,7 +209,7 @@ async function findUserForLogin(identifier) {
             { email: normalizeEmail(normalizedIdentifier) },
         ],
         isActive: true,
-    }).select('+password');
+    }).select('+password +twoFactor.secret +twoFactor.recoveryCodes');
 }
 
 async function authenticateUserCredentials(identifier, password) {
@@ -177,6 +269,7 @@ async function ensureQrIssuedTokens(qrCode, user, req) {
 router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
     const username = normalizeText(req.body?.username);
     const password = req.body?.password;
+    const secondFactorToken = req.body?.totpToken || req.body?.twoFactorToken || req.body?.token;
 
     if (!username || !password) {
         throw createHttpError(400, 'LOGIN_FIELDS_REQUIRED', 'Username or email and password are required');
@@ -187,7 +280,28 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
         throw createHttpError(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
     }
 
+    if (isTwoFactorEnabled(user)) {
+        if (!secondFactorToken) {
+            return ok(res, {
+                twoFactorRequired: true,
+                user: serializeUser(user),
+            }, {
+                message: 'Two-factor authentication required',
+            });
+        }
+
+        if (!verifySecondFactor(user, secondFactorToken)) {
+            recordLogin(user._id, user.username, req, {
+                method: 'password',
+                success: false,
+                failureReason: 'INVALID_TOTP_TOKEN',
+            });
+            throw createHttpError(401, 'INVALID_TOTP_TOKEN', 'Invalid authentication code');
+        }
+    }
+
     const tokens = await issueSessionTokens(user, req);
+    recordLogin(user._id, user.username, req, { method: 'password', sessionId: tokens.sessionId });
     return ok(res, {
         user: serializeUser(user),
         tokens: serializeTokens(tokens),
@@ -214,6 +328,7 @@ router.post('/agent/login', loginLimiter, asyncHandler(async (req, res) => {
     }
 
     const tokens = await issueSessionTokens(user, req);
+    recordLogin(user._id, user.username, req, { method: 'agent', sessionId: tokens.sessionId });
     return ok(res, {
         user: serializeUser(user),
         agent: {
@@ -238,8 +353,12 @@ router.post('/register', registerLimiter, asyncHandler(async (req, res) => {
         throw createHttpError(400, 'REGISTER_FIELDS_REQUIRED', 'username, email, and password are required');
     }
 
-    if (password.length < 6) {
-        throw createHttpError(400, 'PASSWORD_TOO_SHORT', 'Password must be at least 6 characters long');
+    if (password.length < 12) {
+        throw createHttpError(400, 'PASSWORD_TOO_SHORT', 'Password must be at least 12 characters long');
+    }
+
+    if (isCommonPassword(password)) {
+        throw createHttpError(400, 'PASSWORD_TOO_COMMON', 'This password is too common. Choose a stronger one.');
     }
 
     const existingUser = await User.findOne({
@@ -261,6 +380,19 @@ router.post('/register', registerLimiter, asyncHandler(async (req, res) => {
     });
     await newUser.save();
 
+    if (isEmailServiceAvailable()) {
+        const rawToken = generateSecureToken();
+        await EmailToken.create({
+            userId: newUser._id,
+            tokenHash: hashToken(rawToken),
+            type: 'email-verification',
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        });
+        await sendVerificationEmail(email, rawToken).catch((err) =>
+            console.error('[Auth] Failed to send verification email:', err.message)
+        );
+    }
+
     return created(res, {
         user: serializeUser(newUser),
     }, {
@@ -275,6 +407,52 @@ router.get('/me', authenticateToken, asyncHandler(async (req, res) => {
             sessionId: req.auth?.sessionId || null,
         },
     });
+}));
+
+router.get('/login-history', authenticateToken, asyncHandler(async (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const page = Math.max(Number(req.query.page) || 1, 1);
+
+    const entries = await LoginHistory.find({ userId: req.user._id })
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .skip((page - 1) * limit)
+        .lean();
+
+    const total = await LoginHistory.countDocuments({ userId: req.user._id });
+
+    return ok(res, {
+        history: entries,
+        entries,
+        pagination: { current: page, pages: Math.ceil(total / limit), total },
+    });
+}));
+
+router.get('/sessions', authenticateToken, asyncHandler(async (req, res) => {
+    const sessions = (req.user.refreshTokens || []).map((session) => ({
+        sessionId: session.sessionId,
+        createdAt: session.createdAt,
+        lastUsedAt: session.lastUsedAt,
+        userAgent: session.userAgent || null,
+        ip: session.ip || null,
+        current: session.sessionId === req.auth?.sessionId,
+    }));
+
+    return ok(res, { sessions });
+}));
+
+router.delete('/sessions/:sessionId', authenticateToken, asyncHandler(async (req, res) => {
+    const targetSessionId = req.params.sessionId;
+    const user = req.user;
+
+    if (!user.hasSession(targetSessionId)) {
+        throw createHttpError(404, 'SESSION_NOT_FOUND', 'Session not found');
+    }
+
+    user.removeSessionBySessionId(targetSessionId);
+    await user.save();
+
+    return ok(res, null, { message: 'Session revoked' });
 }));
 
 router.post('/refresh', verifyRefreshToken, asyncHandler(async (req, res) => {
@@ -383,18 +561,19 @@ router.post('/qr/scan', asyncHandler(async (req, res) => {
         throw createHttpError(400, 'QR_CODE_REQUIRED', 'QR code is required');
     }
 
-    const qrCode = await QRCodeModel.findOne({ code });
-    if (!qrCode) {
-        throw createHttpError(404, 'QR_CODE_NOT_FOUND', 'QR code was not found or has expired');
-    }
+    const qrCode = await QRCodeModel.findOneAndUpdate(
+        { code, status: 'pending' },
+        { $set: { status: 'scanned', scannedAt: new Date() } },
+        { new: true }
+    );
 
-    if (qrCode.status !== 'pending') {
+    if (!qrCode) {
+        const existing = await QRCodeModel.findOne({ code });
+        if (!existing) {
+            throw createHttpError(404, 'QR_CODE_NOT_FOUND', 'QR code was not found or has expired');
+        }
         throw createHttpError(400, 'QR_CODE_NOT_PENDING', 'QR code has already been used');
     }
-
-    qrCode.status = 'scanned';
-    qrCode.scannedAt = new Date();
-    await qrCode.save();
 
     return ok(res, null, { message: 'QR code scanned successfully' });
 }));
@@ -408,29 +587,248 @@ router.post('/qr/authenticate', asyncHandler(async (req, res) => {
         throw createHttpError(400, 'QR_AUTH_FIELDS_REQUIRED', 'QR code, username or email, and password are required');
     }
 
-    const qrCode = await QRCodeModel.findOne({ code });
-    if (!qrCode) {
-        throw createHttpError(404, 'QR_CODE_NOT_FOUND', 'QR code was not found or has expired');
-    }
-
-    if (qrCode.status !== 'scanned') {
-        throw createHttpError(400, 'QR_CODE_NOT_SCANNED', 'QR code has not been scanned or has already been used');
-    }
-
     const user = await authenticateUserCredentials(username, password);
     if (!user) {
         throw createHttpError(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
     }
 
-    qrCode.status = 'authenticated';
-    qrCode.userId = user._id;
-    qrCode.authenticatedAt = new Date();
+    const qrCode = await QRCodeModel.findOneAndUpdate(
+        { code, status: 'scanned' },
+        {
+            $set: {
+                status: 'authenticated',
+                userId: user._id,
+                authenticatedAt: new Date(),
+            },
+        },
+        { new: true }
+    );
+
+    if (!qrCode) {
+        const existing = await QRCodeModel.findOne({ code });
+        if (!existing) {
+            throw createHttpError(404, 'QR_CODE_NOT_FOUND', 'QR code was not found or has expired');
+        }
+        throw createHttpError(400, 'QR_CODE_NOT_SCANNED', 'QR code has not been scanned or has already been used');
+    }
 
     const tokens = await ensureQrIssuedTokens(qrCode, user, req);
 
     return ok(res, {
         user: serializeUser(user),
         tokens,
+    });
+}));
+
+/* ─── Email verification ─── */
+
+router.post('/verify-email', asyncHandler(async (req, res) => {
+    const token = normalizeText(req.body?.token);
+    if (!token) {
+        throw createHttpError(400, 'TOKEN_REQUIRED', 'Verification token is required');
+    }
+
+    const tokenDoc = await EmailToken.findOne({
+        tokenHash: hashToken(token),
+        type: 'email-verification',
+        expiresAt: { $gt: new Date() },
+    });
+
+    if (!tokenDoc) {
+        throw createHttpError(400, 'INVALID_OR_EXPIRED_TOKEN', 'Verification token is invalid or expired');
+    }
+
+    const user = await User.findById(tokenDoc.userId);
+    if (!user) {
+        throw createHttpError(404, 'USER_NOT_FOUND', 'User not found');
+    }
+
+    user.emailVerified = true;
+    await user.save();
+    await EmailToken.deleteMany({ userId: user._id, type: 'email-verification' });
+
+    return ok(res, null, { message: 'Email verified successfully' });
+}));
+
+router.post('/resend-verification', authenticateToken, asyncHandler(async (req, res) => {
+    if (!isEmailServiceAvailable()) {
+        throw createHttpError(503, 'EMAIL_NOT_CONFIGURED', 'Email service is not configured');
+    }
+
+    const user = req.user;
+    if (user.emailVerified) {
+        return ok(res, null, { message: 'Email is already verified' });
+    }
+
+    await EmailToken.deleteMany({ userId: user._id, type: 'email-verification' });
+
+    const rawToken = generateSecureToken();
+    await EmailToken.create({
+        userId: user._id,
+        tokenHash: hashToken(rawToken),
+        type: 'email-verification',
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    });
+
+    await sendVerificationEmail(user.email, rawToken);
+    return ok(res, null, { message: 'Verification email sent' });
+}));
+
+/* ─── Password reset ─── */
+
+const forgotPasswordLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 3,
+    message: {
+        success: false,
+        error: {
+            code: 'RATE_LIMIT_EXCEEDED',
+            message: 'Too many password reset attempts. Try again later.',
+        },
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+router.post('/forgot-password', forgotPasswordLimiter, asyncHandler(async (req, res) => {
+    const email = normalizeEmail(req.body?.email);
+    if (!email) {
+        throw createHttpError(400, 'EMAIL_REQUIRED', 'Email is required');
+    }
+
+    // Always return success to prevent email enumeration
+    const user = await User.findOne({ email, isActive: true });
+    if (!user || !isEmailServiceAvailable()) {
+        return ok(res, null, { message: 'If that email exists, a reset link has been sent.' });
+    }
+
+    await EmailToken.deleteMany({ userId: user._id, type: 'password-reset' });
+
+    const rawToken = generateSecureToken();
+    await EmailToken.create({
+        userId: user._id,
+        tokenHash: hashToken(rawToken),
+        type: 'password-reset',
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hour
+    });
+
+    await sendPasswordResetEmail(email, rawToken).catch((err) =>
+        console.error('[Auth] Failed to send password reset email:', err.message)
+    );
+
+    return ok(res, null, { message: 'If that email exists, a reset link has been sent.' });
+}));
+
+router.post('/reset-password', asyncHandler(async (req, res) => {
+    const token = normalizeText(req.body?.token);
+    const newPassword = req.body?.password;
+
+    if (!token || !newPassword) {
+        throw createHttpError(400, 'FIELDS_REQUIRED', 'Token and new password are required');
+    }
+
+    if (newPassword.length < 12) {
+        throw createHttpError(400, 'PASSWORD_TOO_SHORT', 'Password must be at least 12 characters long');
+    }
+
+    if (isCommonPassword(newPassword)) {
+        throw createHttpError(400, 'PASSWORD_TOO_COMMON', 'This password is too common. Choose a stronger one.');
+    }
+
+    const tokenDoc = await EmailToken.findOne({
+        tokenHash: hashToken(token),
+        type: 'password-reset',
+        expiresAt: { $gt: new Date() },
+    });
+
+    if (!tokenDoc) {
+        throw createHttpError(400, 'INVALID_OR_EXPIRED_TOKEN', 'Reset token is invalid or expired');
+    }
+
+    const user = await User.findById(tokenDoc.userId).select('+password');
+    if (!user) {
+        throw createHttpError(404, 'USER_NOT_FOUND', 'User not found');
+    }
+
+    user.password = newPassword;
+    user.revokeAllSessions();
+    await user.save();
+    await EmailToken.deleteMany({ userId: user._id, type: 'password-reset' });
+
+    return ok(res, null, { message: 'Password reset successfully. Please log in again.' });
+}));
+
+/* ─── 2FA / TOTP ─── */
+
+router.post('/2fa/setup', authenticateToken, asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user._id).select('+twoFactor.secret +twoFactor.recoveryCodes');
+    if (user.twoFactor?.enabled) {
+        throw createHttpError(400, '2FA_ALREADY_ENABLED', '2FA is already enabled');
+    }
+
+    const secret = generateSecret();
+    const uri = buildOtpauthUri(secret, user.username);
+
+    user.twoFactor = user.twoFactor || {};
+    user.twoFactor.secret = secret;
+    await user.save();
+
+    return ok(res, {
+        secret,
+        uri,
+        otpauthUri: uri,
+    }, { message: 'Scan the QR code with your authenticator app, then confirm with /2fa/confirm' });
+}));
+
+router.post('/2fa/confirm', authenticateToken, asyncHandler(async (req, res) => {
+    const { token } = req.body || {};
+    if (!token || typeof token !== 'string' || token.length !== 6) {
+        throw createHttpError(400, 'INVALID_TOTP_TOKEN', 'A 6-digit token is required');
+    }
+
+    const user = await User.findById(req.user._id).select('+twoFactor.secret +twoFactor.recoveryCodes');
+    if (!user.twoFactor?.secret) {
+        throw createHttpError(400, '2FA_NOT_SETUP', 'Call /2fa/setup first');
+    }
+    if (user.twoFactor.enabled) {
+        throw createHttpError(400, '2FA_ALREADY_ENABLED', '2FA is already enabled');
+    }
+
+    if (!verifyTOTP(user.twoFactor.secret, token)) {
+        throw createHttpError(401, 'INVALID_TOTP_TOKEN', 'Invalid TOTP token');
+    }
+
+    const codes = generateRecoveryCodes();
+    user.twoFactor.enabled = true;
+    user.twoFactor.enabledAt = new Date();
+    user.twoFactor.recoveryCodes = codes.map((c) => crypto.createHash('sha256').update(c).digest('hex'));
+    await user.save();
+
+    return ok(res, { recoveryCodes: codes }, { message: '2FA enabled. Save your recovery codes.' });
+}));
+
+router.post('/2fa/disable', authenticateToken, asyncHandler(async (req, res) => {
+    const { token } = req.body || {};
+    const user = await User.findById(req.user._id).select('+twoFactor.secret +twoFactor.recoveryCodes');
+
+    if (!user.twoFactor?.enabled) {
+        throw createHttpError(400, '2FA_NOT_ENABLED', '2FA is not enabled');
+    }
+
+    if (!token || !verifyTOTP(user.twoFactor.secret, token)) {
+        throw createHttpError(401, 'INVALID_TOTP_TOKEN', 'A valid TOTP token is required to disable 2FA');
+    }
+
+    user.twoFactor = { enabled: false, secret: null, recoveryCodes: [], enabledAt: null };
+    await user.save();
+
+    return ok(res, null, { message: '2FA disabled' });
+}));
+
+router.get('/2fa/status', authenticateToken, asyncHandler(async (req, res) => {
+    return ok(res, {
+        enabled: req.user.twoFactor?.enabled || false,
+        enabledAt: req.user.twoFactor?.enabledAt || null,
     });
 }));
 

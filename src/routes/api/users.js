@@ -51,8 +51,8 @@ router.post('/users', authenticateToken, authorizeRole('admin'), asyncHandler(as
     if (!username || !email || !password) {
         throw createHttpError(400, 'USER_FIELDS_REQUIRED', 'username, email, and password are required');
     }
-    if (password.length < 6) {
-        throw createHttpError(400, 'PASSWORD_TOO_SHORT', 'Password must be at least 6 characters long');
+    if (password.length < 12) {
+        throw createHttpError(400, 'PASSWORD_TOO_SHORT', 'Password must be at least 12 characters long');
     }
     if (!ALLOWED_USER_ROLES.includes(role)) {
         throw createHttpError(400, 'INVALID_ROLE', 'Invalid role');
@@ -145,8 +145,8 @@ router.patch('/users/:id/status', authenticateToken, authorizeRole('admin'), asy
 router.post('/users/:id/reset-password', authenticateToken, authorizeRole('admin'), asyncHandler(async (req, res) => {
     assertObjectId(req.params.id, 'INVALID_USER_ID', 'Invalid user id');
     const password = req.body?.password;
-    if (!password || password.length < 6) {
-        throw createHttpError(400, 'PASSWORD_TOO_SHORT', 'Password is required and must be at least 6 characters long');
+    if (!password || password.length < 12) {
+        throw createHttpError(400, 'PASSWORD_TOO_SHORT', 'Password is required and must be at least 12 characters long');
     }
 
     const user = await User.findById(req.params.id).select('+password');
@@ -185,6 +185,37 @@ router.delete('/users/:id', authenticateToken, authorizeRole('admin'), asyncHand
     }
 
     return ok(res, null, { message: 'User deleted successfully' });
+}));
+
+router.post('/users/batch/status', authenticateToken, authorizeRole('admin'), asyncHandler(async (req, res) => {
+    const { userIds, isActive } = req.body || {};
+    if (!Array.isArray(userIds) || userIds.length === 0 || typeof isActive !== 'boolean') {
+        throw createHttpError(400, 'BATCH_PAYLOAD_INVALID', 'userIds (array) and isActive (boolean) are required');
+    }
+
+    const selfId = req.user._id.toString();
+    const safeIds = userIds.filter((id) => id !== selfId);
+
+    const result = await User.updateMany(
+        { _id: { $in: safeIds } },
+        { $set: { isActive } }
+    );
+
+    return ok(res, { modified: result.modifiedCount, total: safeIds.length }, { message: 'Batch status updated' });
+}));
+
+router.post('/users/batch/role', authenticateToken, authorizeRole('admin'), asyncHandler(async (req, res) => {
+    const { userIds, role } = req.body || {};
+    if (!Array.isArray(userIds) || userIds.length === 0 || !ALLOWED_USER_ROLES.includes(role)) {
+        throw createHttpError(400, 'BATCH_PAYLOAD_INVALID', 'userIds (array) and valid role are required');
+    }
+
+    const result = await User.updateMany(
+        { _id: { $in: userIds } },
+        { $set: { role } }
+    );
+
+    return ok(res, { modified: result.modifiedCount, total: userIds.length }, { message: 'Batch role updated' });
 }));
 
 module.exports = router;

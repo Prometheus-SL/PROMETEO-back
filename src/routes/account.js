@@ -41,6 +41,35 @@ const {
 
 const router = express.Router();
 
+function normalizeText(value) {
+    return String(value || '').trim();
+}
+
+function normalizeOptionalText(value, maxLength, fieldName) {
+    const text = normalizeText(value);
+    if (text.length > maxLength) {
+        throw createHttpError(400, `${fieldName.toUpperCase()}_TOO_LONG`, `${fieldName} cannot exceed ${maxLength} characters.`);
+    }
+    return text || undefined;
+}
+
+function normalizeUsername(value) {
+    const username = normalizeText(value);
+    if (username.length < 3 || username.length > 30) {
+        throw createHttpError(400, 'USERNAME_INVALID', 'Username must be between 3 and 30 characters.');
+    }
+    if (!/^[a-zA-Z0-9._-]+$/.test(username)) {
+        throw createHttpError(400, 'USERNAME_INVALID', 'Username can only contain letters, numbers, dots, hyphens, and underscores.');
+    }
+    return username;
+}
+
+function serializeEditableProfile(user) {
+    return {
+        user: serializeUserSummary(user),
+    };
+}
+
 const LINKED_ACCOUNT_PROVIDERS = {
     spotify: {
         id: 'spotify',
@@ -185,6 +214,55 @@ router.get('/providers', authenticateToken, asyncHandler(async (req, res) => {
     return ok(res, {
         providers: await listProviderSummaries(req.user),
     });
+}));
+
+router.patch('/profile', authenticateToken, asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+        throw createHttpError(404, 'USER_NOT_FOUND', 'User not found.');
+    }
+
+    const username = normalizeUsername(req.body?.username ?? user.username);
+    if (username !== user.username) {
+        const existing = await User.findOne({ username, _id: { $ne: user._id } });
+        if (existing) {
+            throw createHttpError(409, 'USER_ALREADY_EXISTS', 'That username is already in use.');
+        }
+        user.username = username;
+    }
+
+    user.name = normalizeOptionalText(req.body?.name, 50, 'name');
+    user.surname = normalizeOptionalText(req.body?.surname, 50, 'surname');
+
+    await user.save();
+    return ok(res, serializeEditableProfile(user), { message: 'Profile updated.' });
+}));
+
+router.post('/password', authenticateToken, asyncHandler(async (req, res) => {
+    const currentPassword = String(req.body?.currentPassword || '');
+    const newPassword = String(req.body?.newPassword || '');
+
+    if (!currentPassword || !newPassword) {
+        throw createHttpError(400, 'PASSWORD_FIELDS_REQUIRED', 'Current password and new password are required.');
+    }
+    if (newPassword.length < 12) {
+        throw createHttpError(400, 'PASSWORD_TOO_SHORT', 'Password must be at least 12 characters long.');
+    }
+
+    const user = await User.findById(req.user._id).select('+password');
+    if (!user) {
+        throw createHttpError(404, 'USER_NOT_FOUND', 'User not found.');
+    }
+
+    const matches = await user.matchPassword(currentPassword);
+    if (!matches) {
+        throw createHttpError(400, 'CURRENT_PASSWORD_INVALID', 'Current password is invalid.');
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    return ok(res, null, { message: 'Password updated.' });
 }));
 
 router.post('/linked-accounts/:provider/connect', authenticateToken, asyncHandler(async (req, res) => {

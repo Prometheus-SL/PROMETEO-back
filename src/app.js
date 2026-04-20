@@ -3,6 +3,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const { createExpressCorsOptions } = require('./config/cors');
@@ -25,12 +26,64 @@ app.options('/{*any}', cors(corsOptions));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
-app.get('/health', (_req, res) => ok(res, {
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-}, {
-    message: 'PROMETEO server is healthy',
-}));
+const globalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests, please try again later.' } },
+    skip: (req) => req.path === '/health' || req.path === '/metrics',
+});
+app.use(globalLimiter);
+
+const mongoose = require('mongoose');
+
+app.get('/health', (_req, res) => {
+    const dbState = mongoose.connection.readyState;
+    const dbStatus = dbState === 1 ? 'connected' : dbState === 2 ? 'connecting' : 'disconnected';
+
+    return ok(res, {
+        status: dbState === 1 ? 'ok' : 'degraded',
+        timestamp: new Date().toISOString(),
+        uptime: Math.floor(process.uptime()),
+        memory: {
+            rss: Math.round(process.memoryUsage().rss / 1024 / 1024),
+            heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+        },
+        database: dbStatus,
+    }, {
+        message: dbState === 1 ? 'PROMETEO server is healthy' : 'PROMETEO server is degraded',
+    });
+});
+
+const requestMetrics = { totalRequests: 0, errors: 0, statusCodes: {} };
+app.use((req, res, next) => {
+    requestMetrics.totalRequests++;
+    res.on('finish', () => {
+        const code = res.statusCode;
+        requestMetrics.statusCodes[code] = (requestMetrics.statusCodes[code] || 0) + 1;
+        if (code >= 500) requestMetrics.errors++;
+    });
+    next();
+});
+
+app.get('/metrics', (req, res) => {
+    const io = req.app.get('io');
+    const sockets = io ? io.engine?.clientsCount || 0 : 0;
+
+    return ok(res, {
+        timestamp: new Date().toISOString(),
+        uptime: Math.floor(process.uptime()),
+        requests: { ...requestMetrics },
+        connections: { activeSockets: sockets },
+        process: {
+            pid: process.pid,
+            nodeVersion: process.version,
+            memory: process.memoryUsage(),
+            cpuUsage: process.cpuUsage(),
+        },
+    });
+});
 
 const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');

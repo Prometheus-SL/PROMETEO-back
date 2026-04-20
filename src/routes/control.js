@@ -74,6 +74,62 @@ async function createCommandRecord({ agentId, command, parameters = {}, priority
     return commandDoc;
 }
 
+function addCommandListFilters(query, filters = {}) {
+    const { status, command: commandType, from, to } = filters;
+
+    if (status) {
+        query.status = status;
+    }
+    if (commandType) {
+        query.command = commandType;
+    }
+    if (from || to) {
+        query.createdAt = {};
+        if (from) query.createdAt.$gte = new Date(from);
+        if (to) query.createdAt.$lte = new Date(to);
+    }
+
+    return query;
+}
+
+async function buildCommandListQuery(user, filters = {}, agentId = null) {
+    ensureControlRole(user);
+
+    const query = addCommandListFilters({}, filters);
+    if (agentId) {
+        query.agentId = agentId;
+        return query;
+    }
+
+    if (!canControlAllAgents(user)) {
+        const agents = await Agent.find({
+            user: user._id,
+            isActive: { $ne: false },
+        }).select('agentId');
+        query.agentId = { $in: agents.map((agent) => agent.agentId) };
+    }
+
+    return query;
+}
+
+async function listCommands(query, page, limit) {
+    const commands = await Command.find(query)
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .skip((page - 1) * limit);
+
+    const total = await Command.countDocuments(query);
+
+    return {
+        commands,
+        pagination: {
+            current: page,
+            pages: Math.ceil(total / limit),
+            total,
+        },
+    };
+}
+
 async function dispatchIfOnline(req, agent, commandDoc) {
     if (agent.status !== 'online' || commandDoc.scheduledFor > new Date()) {
         return false;
@@ -179,6 +235,14 @@ router.post('/commands/batch', authenticateToken, authorizeRole('admin', 'operat
     });
 }));
 
+router.get('/commands', authenticateToken, asyncHandler(async (req, res) => {
+    const page = Number(req.query.page) || 1;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const query = await buildCommandListQuery(req.user, req.query);
+
+    return ok(res, await listCommands(query, page, limit));
+}));
+
 router.get('/commands/:commandId', authenticateToken, asyncHandler(async (req, res) => {
     const command = await Command.findOne({ commandId: req.params.commandId });
     if (!command) {
@@ -192,34 +256,43 @@ router.get('/commands/:commandId', authenticateToken, asyncHandler(async (req, r
     return ok(res, { command });
 }));
 
+router.post('/commands/:commandId/cancel', authenticateToken, asyncHandler(async (req, res) => {
+    const command = await Command.findOne({ commandId: req.params.commandId });
+    if (!command) {
+        throw createHttpError(404, 'COMMAND_NOT_FOUND', 'Command not found');
+    }
+
+    if (!canControlAllAgents(req.user)) {
+        await getControllableAgent(req.user, command.agentId);
+    }
+
+    const reason = req.body?.reason || 'Cancelled by user';
+    const result = await command.cancel(reason);
+    if (!result) {
+        throw createHttpError(400, 'COMMAND_NOT_CANCELLABLE', 'Command cannot be cancelled in its current state');
+    }
+
+    const io = req.app.get('io');
+    if (io) {
+        const targetSocket = selectConnectedAgentSocket(io, command.agentId, command.command);
+        if (targetSocket) {
+            targetSocket.emit('command-cancel', { commandId: command.commandId, reason });
+        }
+    }
+
+    return ok(res, { command: result }, { message: 'Command cancelled' });
+}));
+
 router.get('/agents/:agentId/commands', authenticateToken, asyncHandler(async (req, res) => {
     const { agentId } = req.params;
     const page = Number(req.query.page) || 1;
-    const limit = Number(req.query.limit) || 20;
-    const { status } = req.query;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
 
     await getControllableAgent(req.user, agentId);
 
-    const query = { agentId };
-    if (status) {
-        query.status = status;
-    }
+    const query = await buildCommandListQuery(req.user, req.query, agentId);
 
-    const commands = await Command.find(query)
-        .sort({ createdAt: -1 })
-        .limit(limit)
-        .skip((page - 1) * limit);
-
-    const total = await Command.countDocuments(query);
-
-    return ok(res, {
-        commands,
-        pagination: {
-            current: page,
-            pages: Math.ceil(total / limit),
-            total,
-        },
-    });
+    return ok(res, await listCommands(query, page, limit));
 }));
 
 router.post('/message', authenticateToken, authorizeRole('admin', 'operator'), asyncHandler(async (req, res) => {
