@@ -111,8 +111,8 @@ router.get('/pages', authenticateToken, asyncHandler(async (req, res) => {
 }));
 
 router.get('/pages/summary', authenticateToken, asyncHandler(async (req, res) => {
-    const pages = await DashboardPage.find({ user: req.user._id })
-        .select('_id name slug active order')
+    const pages = await DashboardPage.find({ user: req.user._id, active: true })
+        .select('_id name slug active principal order')
         .sort({ order: 1, createdAt: 1 })
         .lean();
 
@@ -120,7 +120,9 @@ router.get('/pages/summary', authenticateToken, asyncHandler(async (req, res) =>
 }));
 
 router.get('/pages/active', authenticateToken, asyncHandler(async (req, res) => {
-    const page = await DashboardPage.findOne({ user: req.user._id, active: true }).sort({ updatedAt: -1 });
+    const page =
+        await DashboardPage.findOne({ user: req.user._id, active: true, principal: true }).sort({ order: 1, createdAt: 1 })
+        || await DashboardPage.findOne({ user: req.user._id, active: true }).sort({ order: 1, createdAt: 1 });
     return ok(res, { page });
 }));
 
@@ -173,7 +175,7 @@ router.get('/pages/by-slug/:slug', authenticateToken, asyncHandler(async (req, r
 }));
 
 router.post('/pages', authenticateToken, asyncHandler(async (req, res) => {
-    const { name, slug, description, style = {}, active = false } = req.body || {};
+    const { name, slug, description, style = {}, active = false, principal = false } = req.body || {};
     if (!name && !slug) {
         throw createHttpError(400, 'PAGE_NAME_OR_SLUG_REQUIRED', 'name or slug is required');
     }
@@ -181,22 +183,23 @@ router.post('/pages', authenticateToken, asyncHandler(async (req, res) => {
     const last = await DashboardPage.findOne({ user: req.user._id }).sort({ order: -1 });
     const order = last ? (last.order + 1) : 0;
 
+    const isPrincipal = Boolean(principal);
     const page = new DashboardPage({
         user: req.user._id,
         name: name || slug,
         slug,
         description,
         style,
-        active,
+        active: isPrincipal ? true : active,
+        principal: isPrincipal,
         order,
         updatedBy: req.user._id,
     });
 
-    if (page.active) {
-        // Deactivate others first, then save — ensures at most one active page
+    if (page.principal) {
         await DashboardPage.updateMany(
             { user: req.user._id },
-            { $set: { active: false } }
+            { $set: { principal: false } }
         );
     }
 
@@ -213,46 +216,6 @@ router.get('/pages/:id', authenticateToken, asyncHandler(async (req, res) => {
     }
 
     return ok(res, { page });
-}));
-
-router.patch('/pages/:id', authenticateToken, asyncHandler(async (req, res) => {
-    assertValidId(req.params.id);
-
-    const allowed = ['name', 'slug', 'description', 'style', 'active'];
-    const updates = {};
-    for (const key of allowed) {
-        if (req.body[key] !== undefined) {
-            updates[key] = req.body[key];
-        }
-    }
-    updates.updatedBy = req.user._id;
-
-    const page = await findOwnedPage(req.params.id, req.user._id);
-
-    if (updates.active === true) {
-        await DashboardPage.updateMany(
-            { user: req.user._id, _id: { $ne: req.params.id } },
-            { $set: { active: false } }
-        );
-    }
-
-    Object.assign(page, updates);
-    if (typeof page.save === 'function') {
-        await page.save();
-    }
-
-    return ok(res, { page }, { message: 'Page updated' });
-}));
-
-router.delete('/pages/:id', authenticateToken, asyncHandler(async (req, res) => {
-    assertValidId(req.params.id);
-
-    const deleted = await DashboardPage.findOneAndDelete({ _id: req.params.id, user: req.user._id });
-    if (!deleted) {
-        throw createHttpError(404, 'PAGE_NOT_FOUND', 'Page not found');
-    }
-
-    return ok(res, null, { message: 'Page deleted' });
 }));
 
 router.patch('/pages/reorder', authenticateToken, asyncHandler(async (req, res) => {
@@ -277,6 +240,50 @@ router.patch('/pages/reorder', authenticateToken, asyncHandler(async (req, res) 
     await DashboardPage.bulkWrite(bulk);
     const pages = await DashboardPage.find({ user: req.user._id }).sort({ order: 1, createdAt: 1 });
     return ok(res, { pages }, { message: 'Order updated' });
+}));
+
+router.patch('/pages/:id', authenticateToken, asyncHandler(async (req, res) => {
+    assertValidId(req.params.id);
+
+    const allowed = ['name', 'slug', 'description', 'style', 'active', 'principal'];
+    const updates = {};
+    for (const key of allowed) {
+        if (req.body[key] !== undefined) {
+            updates[key] = req.body[key];
+        }
+    }
+    updates.updatedBy = req.user._id;
+
+    const page = await findOwnedPage(req.params.id, req.user._id);
+
+    if (updates.principal === true) {
+        updates.active = true;
+        await DashboardPage.updateMany(
+            { user: req.user._id, _id: { $ne: req.params.id } },
+            { $set: { principal: false } }
+        );
+    }
+    if (updates.active === false) {
+        updates.principal = false;
+    }
+
+    Object.assign(page, updates);
+    if (typeof page.save === 'function') {
+        await page.save();
+    }
+
+    return ok(res, { page }, { message: 'Page updated' });
+}));
+
+router.delete('/pages/:id', authenticateToken, asyncHandler(async (req, res) => {
+    assertValidId(req.params.id);
+
+    const deleted = await DashboardPage.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    if (!deleted) {
+        throw createHttpError(404, 'PAGE_NOT_FOUND', 'Page not found');
+    }
+
+    return ok(res, null, { message: 'Page deleted' });
 }));
 
 router.post('/pages/:id/modules', authenticateToken, asyncHandler(async (req, res) => {

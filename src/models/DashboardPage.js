@@ -56,6 +56,7 @@ const DashboardPageSchema = new mongoose.Schema({
     description: { type: String, trim: true },
     style: { type: mongoose.Schema.Types.Mixed, default: {} },
     active: { type: Boolean, default: false },
+    principal: { type: Boolean, default: false },
     order: { type: Number, default: 0 },
     modules: { type: [InstalledModuleSchema], default: [] },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
@@ -64,6 +65,7 @@ const DashboardPageSchema = new mongoose.Schema({
 // Indices
 DashboardPageSchema.index({ user: 1, slug: 1 }, { unique: true });
 DashboardPageSchema.index({ user: 1, order: 1 });
+DashboardPageSchema.index({ user: 1, principal: 1 });
 
 // Utilidad para slug
 function slugify(text) {
