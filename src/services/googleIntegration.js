@@ -837,11 +837,15 @@ async function rescheduleGoogleTask(user, taskListId, taskId, due) {
 
 module.exports = {
     GOOGLE_SCOPES,
+    assertGoogleConfigured,
     buildGoogleAuthorizeUrl,
     completeGoogleLink,
     completeGoogleTask,
     disconnectGoogleAccount,
+    fetchGoogleProfile,
     getGoogleStatus,
     getGoogleWorkspaceSummary,
+    persistGoogleTokens,
+    requestGoogleToken,
     rescheduleGoogleTask,
 };

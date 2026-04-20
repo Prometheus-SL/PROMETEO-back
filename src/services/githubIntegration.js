@@ -650,10 +650,14 @@ async function githubGraphQL(user, query, variables = {}) {
 
 module.exports = {
     GITHUB_SCOPES,
+    assertGithubConfigured,
     buildGithubAuthorizeUrl,
     completeGithubLink,
     disconnectGithubAccount,
+    fetchGithubProfile,
     getGithubPulse,
     getGithubStatus,
     githubGraphQL,
+    persistGithubTokens,
+    requestGithubToken,
 };

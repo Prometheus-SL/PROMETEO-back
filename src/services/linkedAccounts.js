@@ -268,6 +268,17 @@ function sanitizeCallbackErrorMessage(error) {
     return message.slice(0, 180);
 }
 
+function peekOAuthStateType(token) {
+    const secret = String(process.env.JWT_SECRET || '').trim();
+    if (!secret) return null;
+    try {
+        const decoded = jwt.verify(String(token || ''), secret);
+        return decoded?.type || null;
+    } catch {
+        return null;
+    }
+}
+
 function buildLinkedAccountCallbackUrl({ origin, provider, status, error }) {
     const callbackUrl = new URL('/linked-account-callback', origin || getDefaultClientOrigin());
     callbackUrl.searchParams.set('provider', provider);
@@ -286,6 +297,7 @@ module.exports = {
     encryptLinkedAccountPayload,
     getDefaultClientOrigin,
     normalizeOrigin,
+    peekOAuthStateType,
     resolveReturnOrigin,
     serializeDiscordLinkedAccount,
     serializeGenericLinkedAccount,

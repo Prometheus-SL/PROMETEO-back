@@ -7,6 +7,7 @@ const { ok } = require('../http/responses');
 const {
     buildLinkedAccountCallbackUrl,
     getDefaultClientOrigin,
+    peekOAuthStateType,
     serializeLinkedAccounts,
     serializeUserSummary,
     verifyLinkedAccountState,
@@ -38,6 +39,7 @@ const {
 const {
     getCreatorStatus,
 } = require('../services/creatorIntegration');
+const { handleOAuthLoginCallback } = require('./oauthLogin');
 
 const router = express.Router();
 
@@ -286,6 +288,18 @@ router.delete('/linked-accounts/:provider', authenticateToken, asyncHandler(asyn
 
 router.get('/linked-accounts/:provider/callback', async (req, res) => {
     const providerId = String(req.params.provider || '').trim().toLowerCase();
+
+    // Delegate to OAuth login handler when the state JWT is an oauth-login type
+    const stateType = peekOAuthStateType(req.query.state);
+    if (stateType === 'oauth-login') {
+        return handleOAuthLoginCallback(req, res, {
+            provider: providerId,
+            code: req.query.code,
+            state: req.query.state,
+            oauthError: req.query.error,
+        });
+    }
+
     let callbackOrigin = getDefaultClientOrigin();
 
     try {

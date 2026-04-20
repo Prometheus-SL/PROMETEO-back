@@ -23,6 +23,10 @@ function refreshTokenMatches(storedToken, candidateToken) {
     }
 }
 
+function hasOAuthProvider(document) {
+    return Array.isArray(document?.oauthProviders) && document.oauthProviders.length > 0;
+}
+
 const sessionSchema = new mongoose.Schema({
     token: {
         type: String,
@@ -354,7 +358,9 @@ const userSchema = new mongoose.Schema({
     },
     password: {
         type: String,
-        required: [true, 'Password es requerido'],
+        required() {
+            return !hasOAuthProvider(this);
+        },
         minlength: [12, 'Password debe tener al menos 12 caracteres'],
         select: false,
     },
@@ -405,19 +411,48 @@ const userSchema = new mongoose.Schema({
         recoveryCodes: { type: [String], select: false, default: [] },
         enabledAt: { type: Date, default: null },
     },
+    oauthProviders: [{
+        provider: {
+            type: String,
+            enum: ['google', 'github', 'discord'],
+            required: true,
+        },
+        providerId: {
+            type: String,
+            required: true,
+        },
+        email: {
+            type: String,
+            trim: true,
+            lowercase: true,
+        },
+        connectedAt: {
+            type: Date,
+            default: Date.now,
+        },
+    }],
 }, {
     timestamps: true,
 });
 
 userSchema.pre('save', async function () {
-    if (!this.isModified('password')) return;
+    if (!this.isModified('password') || !this.password) return;
 
     const salt = await bcrypt.genSalt(12);
     this.password = await bcrypt.hash(this.password, salt);
 });
 
 userSchema.methods.matchPassword = async function (enteredPassword) {
+    if (!this.password) return false;
     return await bcrypt.compare(enteredPassword, this.password);
+};
+
+userSchema.statics.findByOAuthProvider = function (provider, providerId) {
+    return this.findOne({
+        'oauthProviders.provider': provider,
+        'oauthProviders.providerId': providerId,
+        isActive: true,
+    });
 };
 
 userSchema.methods.registerSession = function ({

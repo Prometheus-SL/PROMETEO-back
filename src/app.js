@@ -97,6 +97,7 @@ const discordRoutes = require('./routes/discord');
 const googleRoutes = require('./routes/google');
 const githubRoutes = require('./routes/github');
 const creatorRoutes = require('./routes/creator');
+const oauthLoginRoutes = require('./routes/oauthLogin');
 
 app.use(customLogger);
 
@@ -109,6 +110,7 @@ app.use('/api/v1/discord', discordRoutes);
 app.use('/api/v1/google', googleRoutes);
 app.use('/api/v1/github', githubRoutes);
 app.use('/api/v1/creator', creatorRoutes);
+app.use('/auth/oauth', oauthLoginRoutes);
 app.use('/auth', authRoutes);
 app.use('/control', controlRoutes);
 

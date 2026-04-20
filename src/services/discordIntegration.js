@@ -356,12 +356,16 @@ async function getDiscordStatus(user) {
 
 module.exports = {
     DISCORD_SCOPES,
+    assertDiscordConfigured,
     buildDiscordAuthorizeUrl,
     completeDiscordLink,
     disconnectDiscordAccount,
+    fetchDiscordProfile,
     fetchDiscordUserGuilds,
     getDiscordStatus,
     getValidDiscordAccessToken,
     markDiscordReauthRequired,
+    persistDiscordTokens,
     refreshDiscordAccessToken,
+    requestDiscordToken,
 };
