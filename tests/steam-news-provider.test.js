@@ -48,13 +48,14 @@ test('fetchLatestUpdates returns normalized items', async () => {
     });
 });
 
-test('fetchLatestUpdates filters out items with non-patch feedname', async () => {
+test('fetchLatestUpdates filters out items with non-update feedname', async () => {
     const fakeFetch = async () => jsonResponse({
         appnews: {
             newsitems: [
                 { gid: '1', title: 'Event', url: 'x', contents: '', date: 1, feedname: 'steam_community_announcements' },
                 { gid: '2', title: 'Patch', url: 'y', contents: '', date: 2, feedname: 'patchnotes' },
                 { gid: '3', title: 'Blog', url: 'z', contents: '', date: 3, feedname: 'external' },
+                { gid: '4', title: 'Game X Update Released', url: 'w', contents: '', date: 4, feedname: 'steam_updates' },
             ],
         },
     });
@@ -62,8 +63,23 @@ test('fetchLatestUpdates filters out items with non-patch feedname', async () =>
     const provider = createSteamNewsProvider({ fetch: fakeFetch });
     const items = await provider.fetchLatestUpdates(730);
 
-    assert.equal(items.length, 1);
-    assert.equal(items[0].gid, '2');
+    assert.equal(items.length, 1, 'only steam_updates items pass when title does not look like update for community_announcements, and patchnotes is disabled');
+    assert.equal(items[0].gid, '4');
+});
+
+test('fetchLatestUpdates drops patchnotes feedname items (updates only)', async () => {
+    const fakeFetch = async () => jsonResponse({
+        appnews: {
+            newsitems: [
+                { gid: '10', title: 'Patch 2.0', url: 'x', contents: '', date: 1, feedname: 'patchnotes' },
+            ],
+        },
+    });
+
+    const provider = createSteamNewsProvider({ fetch: fakeFetch });
+    const items = await provider.fetchLatestUpdates(730);
+
+    assert.deepEqual(items, []);
 });
 
 test('fetchLatestUpdates throws on HTTP error', async () => {

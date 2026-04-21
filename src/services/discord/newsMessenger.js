@@ -21,15 +21,43 @@ function formatDateEs(date) {
     }).format(date);
 }
 
-function stripBbcode(text) {
+function toTitleCase(s) {
+    return s.toLowerCase().replace(/\b[a-z0-9]/g, (c) => c.toUpperCase());
+}
+
+function bbcodeToMarkdown(text) {
     if (typeof text !== 'string') return '';
-    return text
-        .replace(/\[img\][^\[]*\[\/img\]/gi, '')
-        .replace(/\[url=[^\]]*\]([^\[]*)\[\/url\]/gi, '$1')
-        .replace(/\[\/?[a-z0-9=*\s"'.:\/\-_]+\]/gi, '')
-        .replace(/\r\n/g, '\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
+
+    let out = text.replace(/\r\n/g, '\n');
+
+    out = out.replace(/\\\[\s*([A-Z0-9][A-Z0-9 ]*?)\s*\]/g, (_, title) => `**${toTitleCase(title.trim())}**`);
+
+    out = out.replace(/\[img\][^\[]*\[\/img\]/gi, '');
+
+    out = out.replace(/\[url=["']?([^"'\]]+)["']?\]([\s\S]*?)\[\/url\]/gi, '[$2]($1)');
+
+    out = out.replace(/\[h[1-6]\]([\s\S]*?)\[\/h[1-6]\]/gi, '\n**$1**\n');
+    out = out.replace(/\[b\]([\s\S]*?)\[\/b\]/gi, '**$1**');
+    out = out.replace(/\[i\]([\s\S]*?)\[\/i\]/gi, '*$1*');
+    out = out.replace(/\[u\]([\s\S]*?)\[\/u\]/gi, '__$1__');
+
+    out = out.replace(/\[\/p\]\[\/\*\]/gi, '\n');
+
+    out = out.replace(/\[\*\]/gi, '• ');
+    out = out.replace(/\[\/\*\]/gi, '\n');
+    out = out.replace(/\[list\]/gi, '\n');
+    out = out.replace(/\[\/list\]/gi, '\n');
+
+    out = out.replace(/\[p\]/gi, '');
+    out = out.replace(/\[\/p\]/gi, '\n\n');
+
+    out = out.replace(/\[\/?[a-z][a-z0-9]*(=[^\]]*)?\]/gi, '');
+
+    out = out.replace(/[ \t]+\n/g, '\n');
+    out = out.replace(/\n[ \t]+/g, '\n');
+    out = out.replace(/\n{3,}/g, '\n\n');
+
+    return out.trim();
 }
 
 function truncate(text, max) {
@@ -75,13 +103,13 @@ function buildEpicActionRow(games) {
 
 function buildSteamEmbed({ appId, appName, item }) {
     const title = truncate(`${appName} — ${item.title}`, DISCORD_EMBED_TITLE_MAX);
-    const body = truncate(stripBbcode(item.contents), STEAM_CONTENTS_TRUNCATE_CHARS);
+    const body = truncate(bbcodeToMarkdown(item.contents), STEAM_CONTENTS_TRUNCATE_CHARS);
     const embed = new EmbedBuilder()
         .setAuthor({ name: 'Prometeo · Steam', iconURL: STEAM_LOGO_URL })
         .setTitle(title)
         .setURL(item.url)
         .setColor(STEAM_BLUE)
-        .setImage(`https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/header.jpg`)
+        .setThumbnail(`https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/capsule_231x87.jpg`)
         .setFooter({ text: `Steam · ${item.feedname}` });
     if (body) embed.setDescription(body);
     if (item.date instanceof Date && !Number.isNaN(item.date.getTime())) {
@@ -136,4 +164,4 @@ function createDiscordNewsMessenger({ client }) {
     };
 }
 
-module.exports = { createDiscordNewsMessenger };
+module.exports = { createDiscordNewsMessenger, bbcodeToMarkdown };

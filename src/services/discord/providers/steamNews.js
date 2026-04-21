@@ -1,5 +1,5 @@
 const STEAM_NEWS_ENDPOINT = 'https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/';
-const ALWAYS_INCLUDE_FEEDS = new Set(['steam_updates', 'patchnotes']);
+const ALWAYS_INCLUDE_FEEDS = new Set(['steam_updates']);
 const TITLE_GATED_FEEDS = new Set(['steam_community_announcements']);
 const UPDATE_TITLE_PATTERN = /\b(update|patch|hotfix|release notes?)\b/i;
 

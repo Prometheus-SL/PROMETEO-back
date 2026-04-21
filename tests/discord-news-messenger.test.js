@@ -80,3 +80,62 @@ test('sendFreeGames is a no-op for empty input', async () => {
     await messenger.sendFreeGames('channel-123', []);
     assert.equal(channel.calls.length, 0);
 });
+
+function sampleSteamItem(overrides = {}) {
+    return {
+        gid: '1830163047267453',
+        title: 'Counter-Strike 2 Update',
+        url: 'https://steam/news/1830163047267453',
+        contents: '[p]\\[ MISC ][/p][list][*][p]Fixed a bug that removed the delay between burst fire bullets.[/p][/*][/list]',
+        date: new Date('2026-04-21T03:11:28.000Z'),
+        feedname: 'steam_community_announcements',
+        ...overrides,
+    };
+}
+
+test('sendGameUpdates renders embeds using thumbnail (small image), not full image', async () => {
+    const { createDiscordNewsMessenger } = require('../src/services/discord/newsMessenger');
+    const channel = makeFakeChannel();
+    const client = makeFakeClient(channel);
+
+    const messenger = createDiscordNewsMessenger({ client });
+    await messenger.sendGameUpdates('channel-123', {
+        appId: 730,
+        appName: 'Counter-Strike 2',
+        items: [sampleSteamItem()],
+    });
+
+    assert.equal(channel.calls.length, 1);
+    const embed = channel.calls[0].embeds[0].data;
+    assert.ok(embed.thumbnail?.url?.includes('/730/'), 'uses thumbnail with appId 730');
+    assert.equal(embed.image, undefined, 'does not set full-size image');
+});
+
+test('sendGameUpdates description contains markdown-converted BBCode (bold headers, bullets)', async () => {
+    const { createDiscordNewsMessenger } = require('../src/services/discord/newsMessenger');
+    const channel = makeFakeChannel();
+    const client = makeFakeClient(channel);
+
+    const messenger = createDiscordNewsMessenger({ client });
+    await messenger.sendGameUpdates('channel-123', {
+        appId: 730,
+        appName: 'Counter-Strike 2',
+        items: [sampleSteamItem()],
+    });
+
+    const embed = channel.calls[0].embeds[0].data;
+    assert.ok(embed.description.includes('**Misc**'), 'section header rendered as bold markdown');
+    assert.ok(embed.description.includes('• Fixed a bug that removed the delay'), 'list item rendered as bullet');
+    assert.ok(!embed.description.includes('\\['), 'no residual escaped brackets');
+    assert.ok(!embed.description.includes('[p]'), 'no residual bbcode tags');
+});
+
+test('sendGameUpdates is a no-op for empty items', async () => {
+    const { createDiscordNewsMessenger } = require('../src/services/discord/newsMessenger');
+    const channel = makeFakeChannel();
+    const client = makeFakeClient(channel);
+
+    const messenger = createDiscordNewsMessenger({ client });
+    await messenger.sendGameUpdates('channel-123', { appId: 730, appName: 'X', items: [] });
+    assert.equal(channel.calls.length, 0);
+});
