@@ -36,7 +36,7 @@ test('fetchLatestUpdates returns normalized items', async () => {
 
     assert.ok(capturedUrl.includes('appid=730'));
     assert.ok(capturedUrl.includes('count=5'));
-    assert.ok(capturedUrl.includes('feeds=steam_updates%2Cpatchnotes'));
+    assert.ok(!capturedUrl.includes('feeds='), 'must not pass server-side feeds filter (it returns stale CS:GO items)');
     assert.equal(items.length, 1);
     assert.deepEqual(items[0], {
         gid: '111',
@@ -82,4 +82,55 @@ test('fetchLatestUpdates returns [] when appnews.newsitems is missing', async ()
 
     const items = await provider.fetchLatestUpdates(730);
     assert.deepEqual(items, []);
+});
+
+test('fetchLatestUpdates keeps steam_community_announcements items whose title looks like an update (CS2 case)', async () => {
+    const fakeFetch = async () => jsonResponse({
+        appnews: {
+            newsitems: [
+                {
+                    gid: '1830163047267453',
+                    title: 'Counter-Strike 2 Update',
+                    url: 'https://steam/news/1830163047267453',
+                    contents: 'Fixed a bug that removed the delay between burst fire bullets.',
+                    date: 1776733888,
+                    feedname: 'steam_community_announcements',
+                },
+                {
+                    gid: '1829528821308514',
+                    title: 'Animgraph 2 Beta Update',
+                    url: 'https://steam/news/1829528821308514',
+                    contents: 'All changes from the animgraph_2_beta build are now live.',
+                    date: 1775776671,
+                    feedname: 'steam_community_announcements',
+                },
+            ],
+        },
+    });
+
+    const provider = createSteamNewsProvider({ fetch: fakeFetch });
+    const items = await provider.fetchLatestUpdates(730);
+
+    assert.equal(items.length, 2);
+    assert.equal(items[0].gid, '1830163047267453');
+    assert.equal(items[1].gid, '1829528821308514');
+});
+
+test('fetchLatestUpdates drops steam_community_announcements items whose title is not update-like', async () => {
+    const fakeFetch = async () => jsonResponse({
+        appnews: {
+            newsitems: [
+                { gid: '1', title: 'Major Championship Starts Today', url: 'x', contents: '', date: 1, feedname: 'steam_community_announcements' },
+                { gid: '2', title: 'Summer Sale Live Now', url: 'y', contents: '', date: 2, feedname: 'steam_community_announcements' },
+                { gid: '3', title: 'Counter-Strike 2 Update', url: 'z', contents: '', date: 3, feedname: 'steam_community_announcements' },
+                { gid: '4', title: 'Hotfix deployed', url: 'w', contents: '', date: 4, feedname: 'steam_community_announcements' },
+                { gid: '5', title: 'Release Notes 1.2', url: 'v', contents: '', date: 5, feedname: 'steam_community_announcements' },
+            ],
+        },
+    });
+
+    const provider = createSteamNewsProvider({ fetch: fakeFetch });
+    const items = await provider.fetchLatestUpdates(730);
+
+    assert.deepEqual(items.map((i) => i.gid), ['3', '4', '5']);
 });

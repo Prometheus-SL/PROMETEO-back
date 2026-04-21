@@ -1,5 +1,7 @@
 const STEAM_NEWS_ENDPOINT = 'https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/';
-const PATCH_FEED_NAMES = new Set(['steam_updates', 'patchnotes']);
+const ALWAYS_INCLUDE_FEEDS = new Set(['steam_updates', 'patchnotes']);
+const TITLE_GATED_FEEDS = new Set(['steam_community_announcements']);
+const UPDATE_TITLE_PATTERN = /\b(update|patch|hotfix|release notes?)\b/i;
 
 function normalize(raw) {
     const dateSeconds = Number(raw?.date);
@@ -13,6 +15,15 @@ function normalize(raw) {
     };
 }
 
+function isPatchItem(item) {
+    if (!item.gid) return false;
+    if (ALWAYS_INCLUDE_FEEDS.has(item.feedname)) return true;
+    if (TITLE_GATED_FEEDS.has(item.feedname)) {
+        return UPDATE_TITLE_PATTERN.test(item.title);
+    }
+    return false;
+}
+
 function createSteamNewsProvider({ fetch: fetchFn = null, logger = console } = {}) {
     return {
         async fetchLatestUpdates(appId, { limit = 5 } = {}) {
@@ -24,7 +35,6 @@ function createSteamNewsProvider({ fetch: fetchFn = null, logger = console } = {
             const params = new URLSearchParams({
                 appid: String(appId),
                 count: String(limit),
-                feeds: 'steam_updates,patchnotes',
             });
             const url = `${STEAM_NEWS_ENDPOINT}?${params.toString()}`;
 
@@ -40,11 +50,15 @@ function createSteamNewsProvider({ fetch: fetchFn = null, logger = console } = {
             const items = payload?.appnews?.newsitems;
             if (!Array.isArray(items)) return [];
 
-            return items
-                .map(normalize)
-                .filter((item) => item.gid && PATCH_FEED_NAMES.has(item.feedname));
+            return items.map(normalize).filter(isPatchItem);
         },
     };
 }
 
-module.exports = { createSteamNewsProvider, STEAM_NEWS_ENDPOINT, PATCH_FEED_NAMES };
+module.exports = {
+    createSteamNewsProvider,
+    STEAM_NEWS_ENDPOINT,
+    ALWAYS_INCLUDE_FEEDS,
+    TITLE_GATED_FEEDS,
+    UPDATE_TITLE_PATTERN,
+};
