@@ -6,9 +6,13 @@ const {
 } = require('../discordIntegration');
 
 const ADMINISTRATOR_BIT = 0x8n;
-const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_TTL_MS = 15 * 60 * 1000;
+const DEFAULT_NEGATIVE_CACHE_MS = 60 * 1000;
+const MAX_NEGATIVE_CACHE_MS = 15 * 60 * 1000;
 
 const cache = new Map();
+const negativeCache = new Map();
+const inFlight = new Map();
 
 function buildIconUrl(guildId, iconHash) {
     if (!guildId || !iconHash) return null;
@@ -22,7 +26,19 @@ function hasGuildsScope(discord) {
 }
 
 function isRateLimitError(err) {
-    return err?.details?.status === 429 || /rate limit|limitad/i.test(err?.message || '');
+    return (
+        err?.code === 'DISCORD_RATE_LIMITED' ||
+        err?.details?.httpStatus === 429 ||
+        err?.status === 429
+    );
+}
+
+function getRetryAfterMs(err) {
+    const sec = Number(err?.details?.retryAfterSec);
+    if (Number.isFinite(sec) && sec > 0) {
+        return Math.min(sec * 1000, MAX_NEGATIVE_CACHE_MS);
+    }
+    return DEFAULT_NEGATIVE_CACHE_MS;
 }
 
 function enrichWithBotPresence(rawGuilds) {
@@ -69,8 +85,8 @@ async function getUserAdminGuilds(userDocId) {
     }
 
     const cacheKey = String(userDocId);
-    const cached = cache.get(cacheKey);
     const now = Date.now();
+    const cached = cache.get(cacheKey);
 
     if (cached && now - cached.at < CACHE_TTL_MS) {
         return {
@@ -80,31 +96,63 @@ async function getUserAdminGuilds(userDocId) {
         };
     }
 
-    let raw;
-    try {
-        const accessToken = await getValidDiscordAccessToken(user);
-        raw = await fetchDiscordUserGuilds(accessToken);
-        cache.set(cacheKey, { at: now, raw });
-    } catch (err) {
-        if (isRateLimitError(err) && cached) {
-            return {
-                needsLink: false,
-                needsReauth: false,
-                guilds: enrichWithBotPresence(cached.raw),
-            };
-        }
-        throw err;
+    const blockedUntil = negativeCache.get(cacheKey);
+    if (blockedUntil && blockedUntil > now) {
+        return {
+            needsLink: false,
+            needsReauth: false,
+            guilds: cached ? enrichWithBotPresence(cached.raw) : [],
+            rateLimited: true,
+        };
+    }
+
+    let pending = inFlight.get(cacheKey);
+    if (!pending) {
+        pending = (async () => {
+            const accessToken = await getValidDiscordAccessToken(user);
+            return fetchDiscordUserGuilds(accessToken);
+        })()
+            .then((raw) => {
+                cache.set(cacheKey, { at: Date.now(), raw });
+                negativeCache.delete(cacheKey);
+                return { raw };
+            })
+            .catch((err) => {
+                if (isRateLimitError(err)) {
+                    negativeCache.set(cacheKey, Date.now() + getRetryAfterMs(err));
+                    return { rateLimited: true };
+                }
+                throw err;
+            })
+            .finally(() => {
+                inFlight.delete(cacheKey);
+            });
+        inFlight.set(cacheKey, pending);
+    }
+
+    const outcome = await pending;
+
+    if (outcome.rateLimited) {
+        const fallback = cache.get(cacheKey);
+        return {
+            needsLink: false,
+            needsReauth: false,
+            guilds: fallback ? enrichWithBotPresence(fallback.raw) : [],
+            rateLimited: true,
+        };
     }
 
     return {
         needsLink: false,
         needsReauth: false,
-        guilds: enrichWithBotPresence(raw),
+        guilds: enrichWithBotPresence(outcome.raw),
     };
 }
 
 function __clearCacheForTests() {
     cache.clear();
+    negativeCache.clear();
+    inFlight.clear();
 }
 
 module.exports = { getUserAdminGuilds, __clearCacheForTests };

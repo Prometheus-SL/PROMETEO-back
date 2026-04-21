@@ -9,7 +9,8 @@ function resetModule() {
     delete require.cache[require.resolve(servicePath)];
 }
 
-function installDeps({ user, apiGuilds = [], botGuildIds = [], accessToken = 'tok' }) {
+function installDeps({ user, apiGuilds = [], botGuildIds = [], accessToken = 'tok', fetchImpl } = {}) {
+    const stats = { fetchCalls: 0 };
     mock(path.join(__dirname, '..', 'src', 'models', 'User.js'), {
         findById: async (id) => {
             assert.equal(id, 'user-1');
@@ -23,7 +24,9 @@ function installDeps({ user, apiGuilds = [], botGuildIds = [], accessToken = 'to
     });
     mock(path.join(__dirname, '..', 'src', 'services', 'discordIntegration.js'), {
         async fetchDiscordUserGuilds(tok) {
+            stats.fetchCalls += 1;
             assert.equal(tok, accessToken);
+            if (fetchImpl) return fetchImpl(stats.fetchCalls);
             return apiGuilds;
         },
         async getValidDiscordAccessToken() {
@@ -31,7 +34,15 @@ function installDeps({ user, apiGuilds = [], botGuildIds = [], accessToken = 'to
         },
     });
     resetModule();
-    return require(servicePath);
+    return { ...require(servicePath), stats };
+}
+
+function rateLimitError(retryAfterSec = 1) {
+    const err = new Error('Discord is rate limiting this request.');
+    err.code = 'DISCORD_RATE_LIMITED';
+    err.status = 429;
+    err.details = { httpStatus: 429, retryAfterSec };
+    return err;
 }
 
 function apiGuild({ id, name = 'Guild', owner = false, adminBit = false, icon = null }) {
@@ -100,4 +111,61 @@ test('getUserAdminGuilds: animated icons use gif extension', async (t) => {
     t.after(() => { mock.stopAll(); resetModule(); });
     const result = await getUserAdminGuilds('user-1');
     assert.ok(result.guilds[0].icon.endsWith('.gif?size=128'));
+});
+
+test('getUserAdminGuilds: returns rateLimited with empty guilds when Discord 429s and no cache exists', async (t) => {
+    const { getUserAdminGuilds, stats } = installDeps({
+        user: { _id: 'user-1', linkedAccounts: { discord: { status: 'connected', scopes: ['guilds'] } } },
+        fetchImpl: () => { throw rateLimitError(1); },
+    });
+    t.after(() => { mock.stopAll(); resetModule(); });
+
+    const result = await getUserAdminGuilds('user-1');
+    assert.equal(result.rateLimited, true);
+    assert.deepEqual(result.guilds, []);
+    assert.equal(stats.fetchCalls, 1);
+});
+
+test('getUserAdminGuilds: negative cache prevents further Discord calls during retry window', async (t) => {
+    const { getUserAdminGuilds, stats } = installDeps({
+        user: { _id: 'user-1', linkedAccounts: { discord: { status: 'connected', scopes: ['guilds'] } } },
+        fetchImpl: () => { throw rateLimitError(60); },
+    });
+    t.after(() => { mock.stopAll(); resetModule(); });
+
+    const first = await getUserAdminGuilds('user-1');
+    const second = await getUserAdminGuilds('user-1');
+
+    assert.equal(first.rateLimited, true);
+    assert.equal(second.rateLimited, true);
+    assert.equal(stats.fetchCalls, 1);
+});
+
+test('getUserAdminGuilds: concurrent calls are deduped into a single Discord fetch', async (t) => {
+    let resolveFetch;
+    const fetchPromise = new Promise((resolve) => { resolveFetch = resolve; });
+    const { getUserAdminGuilds, stats } = installDeps({
+        user: { _id: 'user-1', linkedAccounts: { discord: { status: 'connected', scopes: ['guilds'] } } },
+        fetchImpl: () => fetchPromise,
+    });
+    t.after(() => { mock.stopAll(); resetModule(); });
+
+    const p1 = getUserAdminGuilds('user-1');
+    const p2 = getUserAdminGuilds('user-1');
+    resolveFetch([apiGuild({ id: 'g-1', name: 'A', owner: true })]);
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+    assert.equal(r1.guilds.length, 1);
+    assert.equal(r2.guilds.length, 1);
+    assert.equal(stats.fetchCalls, 1);
+});
+
+test('getUserAdminGuilds: non-rate-limit errors still propagate', async (t) => {
+    const { getUserAdminGuilds } = installDeps({
+        user: { _id: 'user-1', linkedAccounts: { discord: { status: 'connected', scopes: ['guilds'] } } },
+        fetchImpl: () => { throw new Error('network down'); },
+    });
+    t.after(() => { mock.stopAll(); resetModule(); });
+
+    await assert.rejects(() => getUserAdminGuilds('user-1'), /network down/);
 });

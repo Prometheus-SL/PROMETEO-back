@@ -136,6 +136,24 @@ function createDiscordApiError(response, payload) {
         );
     }
 
+    if (response.status === 429) {
+        const headerSec = Number(response.headers.get('retry-after'));
+        const bodySec = Number(payload?.retry_after);
+        const retryAfterSec =
+            Number.isFinite(bodySec) && bodySec > 0
+                ? bodySec
+                : Number.isFinite(headerSec) && headerSec > 0
+                    ? headerSec
+                    : 60;
+        return createLinkedAccountError(
+            429,
+            'DISCORD_RATE_LIMITED',
+            'Discord is rate limiting this request.',
+            { httpStatus: 429, retryAfterSec, discordPayload: payload },
+            { 'Retry-After': String(Math.ceil(retryAfterSec)) }
+        );
+    }
+
     return createLinkedAccountError(
         502,
         'DISCORD_API_ERROR',
@@ -334,7 +352,10 @@ async function getValidDiscordAccessToken(user) {
 
 async function fetchDiscordUserGuilds(accessToken) {
     const response = await fetch(`${DISCORD_API_BASE_URL}/users/@me/guilds`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Accept-Language': 'en-US',
+        },
     });
     const payload = await parseDiscordResponse(response);
     if (!response.ok) {
