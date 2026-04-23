@@ -7,6 +7,9 @@ const { createChannelStateStore } = require('./channelStateStore');
 const { createSteamUpdatesScheduler } = require('./steamUpdatesScheduler');
 const { createSteamNewsProvider } = require('./providers/steamNews');
 const { getSharedCatalog } = require('./steamCatalog');
+const { createArtistReleasesScheduler } = require('./artistReleasesScheduler');
+const { createSpotifyTokenProvider, createSpotifyReleasesProvider } = require('./providers/spotifyReleases');
+const { createSpotifyArtistCatalog } = require('./spotifyArtistCatalog');
 
 let client = null;
 let ready = false;
@@ -14,6 +17,7 @@ let initPromise = null;
 let scheduler = null;
 let steamScheduler = null;
 let steamCatalogInstance = null;
+let artistReleasesScheduler = null;
 
 function startNewsSchedulerIfNeeded(botClient) {
     if (!scheduler) {
@@ -46,6 +50,32 @@ function startNewsSchedulerIfNeeded(botClient) {
         console.log('[Discord] Steam updates scheduler arrancado (tick cada 1 h)');
     } catch (err) {
         console.error('[Discord] No se pudo arrancar el Steam updates scheduler:', err.message);
+    }
+
+    if (artistReleasesScheduler) return;
+    if (!process.env.SPOTIFY_CLIENT_ID || !process.env.SPOTIFY_CLIENT_SECRET) {
+        console.log('[Discord] Artist releases scheduler idle: Spotify not configured');
+        return;
+    }
+
+    try {
+        const spotifyTokenProvider = createSpotifyTokenProvider({
+            clientId: process.env.SPOTIFY_CLIENT_ID,
+            clientSecret: process.env.SPOTIFY_CLIENT_SECRET,
+        });
+        const spotifyProvider = createSpotifyReleasesProvider({ tokenProvider: spotifyTokenProvider });
+        const spotifyCatalog = createSpotifyArtistCatalog({ provider: spotifyProvider });
+
+        artistReleasesScheduler = createArtistReleasesScheduler({
+            GuildNotificationConfig,
+            provider: spotifyProvider,
+            messenger: createDiscordNewsMessenger({ client: botClient }),
+            channelStateStore: createChannelStateStore(),
+        });
+        artistReleasesScheduler.start();
+        console.log('[Discord] Artist releases scheduler started (tick every 1 h)');
+    } catch (err) {
+        console.error('[Discord] Could not start artist releases scheduler:', err.message);
     }
 }
 

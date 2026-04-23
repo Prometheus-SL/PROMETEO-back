@@ -6,8 +6,11 @@ const { ok } = require('../http/responses');
 const { initBot, getStatus, getGuildInfo, getInviteUrl, disconnectVoiceMember, setVoiceMute, getMemberPermissions } = require('../services/discord/client');
 const guildConfigService = require('../services/discord/guildConfigService');
 const gameUpdatesService = require('../services/discord/gameUpdatesService');
+const artistReleasesService = require('../services/discord/artistReleasesService');
 const { getSharedCatalog } = require('../services/discord/steamCatalog');
 const { getUserAdminGuilds } = require('../services/discord/userGuildsService');
+const { createSpotifyArtistCatalog } = require('../services/discord/spotifyArtistCatalog');
+const { createSpotifyReleasesProvider, createSpotifyTokenProvider } = require('../services/discord/providers/spotifyReleases');
 const User = require('../models/User');
 
 const router = express.Router();
@@ -111,6 +114,71 @@ router.post('/notifications/game-updates', authenticateToken, ensureBot, asyncHa
     }));
     const result = await gameUpdatesService.saveStatusForUser(req.user._id, normalized);
     return ok(res, result);
+}));
+
+router.get('/artists/search', authenticateToken, asyncHandler(async (req, res) => {
+    if (!process.env.SPOTIFY_CLIENT_ID || !process.env.SPOTIFY_CLIENT_SECRET) {
+        throw createHttpError(503, 'SPOTIFY_NOT_CONFIGURED', 'Spotify not configured');
+    }
+
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 10) : 10;
+
+    const tokenProvider = createSpotifyTokenProvider({
+        clientId: process.env.SPOTIFY_CLIENT_ID,
+        clientSecret: process.env.SPOTIFY_CLIENT_SECRET,
+    });
+    const provider = createSpotifyReleasesProvider({ tokenProvider });
+    const catalog = createSpotifyArtistCatalog({ provider });
+
+    const results = await catalog.search(q, { limit });
+    return ok(res, { results });
+}));
+
+router.get('/notifications/artist-releases', authenticateToken, ensureBot, asyncHandler(async (req, res) => {
+    if (!process.env.SPOTIFY_CLIENT_ID || !process.env.SPOTIFY_CLIENT_SECRET) {
+        throw createHttpError(503, 'SPOTIFY_NOT_CONFIGURED', 'Spotify not configured');
+    }
+
+    const state = await artistReleasesService.getStatusForUser(req.user._id);
+    return ok(res, state);
+}));
+
+router.post('/notifications/artist-releases', authenticateToken, ensureBot, asyncHandler(async (req, res) => {
+    if (!process.env.SPOTIFY_CLIENT_ID || !process.env.SPOTIFY_CLIENT_SECRET) {
+        throw createHttpError(503, 'SPOTIFY_NOT_CONFIGURED', 'Spotify not configured');
+    }
+
+    const configs = Array.isArray(req.body?.configs) ? req.body.configs : null;
+    if (!configs) {
+        throw createHttpError(400, 'INVALID_BODY', 'Expected { configs: [{ guildId, channelId, enabled, includeTypes, subscriptions }] }');
+    }
+
+    const normalized = configs.map((c) => ({
+        guildId: typeof c?.guildId === 'string' ? c.guildId : '',
+        channelId: typeof c?.channelId === 'string' ? c.channelId : null,
+        enabled: Boolean(c?.enabled),
+        includeTypes: Array.isArray(c?.includeTypes)
+            ? c.includeTypes.filter((t) => ['album', 'single', 'compilation', 'appears_on'].includes(t))
+            : [],
+        subscriptions: Array.isArray(c?.subscriptions)
+            ? c.subscriptions.map((s) => ({ artistId: String(s?.artistId ?? '').trim() })).filter((s) => s.artistId)
+            : [],
+    }));
+
+    const tokenProvider = createSpotifyTokenProvider({
+        clientId: process.env.SPOTIFY_CLIENT_ID,
+        clientSecret: process.env.SPOTIFY_CLIENT_SECRET,
+    });
+    const provider = createSpotifyReleasesProvider({ tokenProvider });
+    const catalog = createSpotifyArtistCatalog({ provider });
+
+    const { configs: resultConfigs, needsLink, needsReauth } = await artistReleasesService.saveStatusForUser(req.user._id, normalized, {
+        catalog,
+        provider,
+    });
+    return ok(res, { configs: resultConfigs, warning: null, needsLink, needsReauth });
 }));
 
 module.exports = router;

@@ -2,6 +2,7 @@ const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('
 
 const VIOLET = 0x7c3aed;
 const STEAM_BLUE = 0x1b2838;
+const SPOTIFY_GREEN = 0x1db954;
 const EPIC_LOGO_URL = 'https://cdn2.unrealengine.com/Epic+Games+Node%2FEGS_Horizontal_FINAL_white+logo_1900x500-1900x500-36e4c79aec80c37be1bd21e18f1eafef2bf3ef52.png';
 const STEAM_LOGO_URL = 'https://store.cloudflare.steamstatic.com/public/shared/images/header/logo_steam.svg';
 
@@ -118,6 +119,30 @@ function buildSteamEmbed({ appId, appName, item }) {
     return embed;
 }
 
+function buildArtistReleaseEmbed(artistName, item) {
+    const typeLabel = {
+        album: 'Album',
+        single: 'Single',
+        compilation: 'Compilation',
+        appears_on: 'Featured',
+    }[item.type] || 'Release';
+
+    const title = truncate(`${artistName} — ${item.name}`, DISCORD_EMBED_TITLE_MAX);
+    const embed = new EmbedBuilder()
+        .setTitle(title)
+        .setURL(item.url)
+        .setColor(SPOTIFY_GREEN)
+        .addFields({ name: 'Type', value: typeLabel, inline: true })
+        .addFields({ name: 'Release date', value: item.releaseDate || 'N/A', inline: true })
+        .setFooter({ text: 'Spotify · New release' });
+
+    if (item.imageUrl) {
+        embed.setThumbnail(item.imageUrl);
+    }
+
+    return embed;
+}
+
 function chunk(arr, size) {
     const out = [];
     for (let i = 0; i < arr.length; i += size) {
@@ -157,6 +182,15 @@ function createDiscordNewsMessenger({ client }) {
             if (!Array.isArray(items) || items.length === 0) return;
             const channel = await fetchTextChannel(client, channelId);
             const embeds = items.map((item) => buildSteamEmbed({ appId, appName, item }));
+            for (const batch of chunk(embeds, EMBEDS_PER_MESSAGE)) {
+                await channel.send({ embeds: batch });
+            }
+        },
+
+        async sendArtistReleases(channelId, { artistName, items } = {}) {
+            if (!Array.isArray(items) || items.length === 0) return;
+            const channel = await fetchTextChannel(client, channelId);
+            const embeds = items.map((item) => buildArtistReleaseEmbed(artistName, item));
             for (const batch of chunk(embeds, EMBEDS_PER_MESSAGE)) {
                 await channel.send({ embeds: batch });
             }
