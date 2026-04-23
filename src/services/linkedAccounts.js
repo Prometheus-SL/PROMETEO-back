@@ -157,6 +157,8 @@ function serializeUserSummary(user) {
         name: user.name,
         surname: user.surname,
         birthday: user.birthday,
+        avatarUrl: user.avatarUrl || null,
+        avatarUpdatedAt: user.avatarUpdatedAt || null,
     };
 }
 

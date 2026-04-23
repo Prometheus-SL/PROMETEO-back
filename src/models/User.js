@@ -379,6 +379,14 @@ const userSchema = new mongoose.Schema({
         trim: true,
         maxlength: [50, 'Surname no puede exceder 50 caracteres'],
     },
+    avatarUrl: {
+        type: String,
+        default: null,
+    },
+    avatarUpdatedAt: {
+        type: Date,
+        default: null,
+    },
     birthday: {
         type: Date,
     },

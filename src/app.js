@@ -4,6 +4,8 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
+const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
 
 const { createExpressCorsOptions } = require('./config/cors');
@@ -100,6 +102,20 @@ const creatorRoutes = require('./routes/creator');
 const oauthLoginRoutes = require('./routes/oauthLogin');
 
 app.use(customLogger);
+
+const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
+const AVATARS_DIR = path.join(UPLOADS_DIR, 'avatars');
+fs.mkdirSync(AVATARS_DIR, { recursive: true });
+
+app.use('/uploads', express.static(UPLOADS_DIR, {
+    fallthrough: true,
+    maxAge: 0,
+    index: false,
+    dotfiles: 'ignore',
+    setHeaders: (res) => {
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    },
+}));
 
 app.use('/api/v1', apiRoutes);
 app.use('/api/v1/account', accountRoutes);

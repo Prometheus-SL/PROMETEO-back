@@ -1,9 +1,14 @@
 const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const fsPromises = require('fs/promises');
+const multer = require('multer');
 const User = require('../models/User');
 const { authenticateToken } = require('../middleware/auth');
 const { asyncHandler } = require('../http/asyncHandler');
 const { createHttpError } = require('../http/errors');
 const { ok } = require('../http/responses');
+const { processAvatarImage, AVATAR_MAX_BYTES } = require('../services/avatarService');
 const {
     buildLinkedAccountCallbackUrl,
     getDefaultClientOrigin,
@@ -42,6 +47,25 @@ const {
 const { handleOAuthLoginCallback } = require('./oauthLogin');
 
 const router = express.Router();
+
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: AVATAR_MAX_BYTES, files: 1 },
+});
+
+function getAvatarsDir() {
+    if (process.env.AVATARS_DIR_OVERRIDE) {
+        fs.mkdirSync(process.env.AVATARS_DIR_OVERRIDE, { recursive: true });
+        return process.env.AVATARS_DIR_OVERRIDE;
+    }
+    const dir = path.join(__dirname, '..', '..', 'uploads', 'avatars');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+}
+
+function avatarUrlFor(userId) {
+    return `/uploads/avatars/${userId}.webp`;
+}
 
 function normalizeText(value) {
     return String(value || '').trim();
@@ -265,6 +289,67 @@ router.post('/password', authenticateToken, asyncHandler(async (req, res) => {
     await user.save();
 
     return ok(res, null, { message: 'Password updated.' });
+}));
+
+router.post(
+    '/avatar',
+    authenticateToken,
+    (req, res, next) => {
+        upload.single('file')(req, res, (err) => {
+            if (!err) return next();
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return next(createHttpError(400, 'AVATAR_TOO_LARGE', 'The image must be 5 MB or less.'));
+            }
+            return next(createHttpError(400, 'AVATAR_FILE_REQUIRED', 'The uploaded file could not be read.'));
+        });
+    },
+    asyncHandler(async (req, res) => {
+        if (!req.file || !req.file.buffer) {
+            throw createHttpError(400, 'AVATAR_FILE_REQUIRED', 'No image file was received.');
+        }
+
+        const user = await User.findById(req.user._id);
+        if (!user) {
+            throw createHttpError(404, 'USER_NOT_FOUND', 'User not found.');
+        }
+
+        const { buffer } = await processAvatarImage(req.file.buffer);
+        const avatarsDir = getAvatarsDir();
+        const finalPath = path.join(avatarsDir, `${user._id}.webp`);
+        const tempPath = `${finalPath}.tmp`;
+
+        await fsPromises.writeFile(tempPath, buffer);
+        await fsPromises.rename(tempPath, finalPath);
+
+        user.avatarUrl = avatarUrlFor(user._id);
+        user.avatarUpdatedAt = new Date();
+        await user.save();
+
+        return ok(res, serializeEditableProfile(user), { message: 'Profile photo updated.' });
+    }),
+);
+
+router.delete('/avatar', authenticateToken, asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+        throw createHttpError(404, 'USER_NOT_FOUND', 'User not found.');
+    }
+
+    const avatarsDir = getAvatarsDir();
+    const filePath = path.join(avatarsDir, `${user._id}.webp`);
+    try {
+        await fsPromises.unlink(filePath);
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            throw error;
+        }
+    }
+
+    user.avatarUrl = null;
+    user.avatarUpdatedAt = null;
+    await user.save();
+
+    return ok(res, serializeEditableProfile(user), { message: 'Profile photo removed.' });
 }));
 
 router.post('/linked-accounts/:provider/connect', authenticateToken, asyncHandler(async (req, res) => {
