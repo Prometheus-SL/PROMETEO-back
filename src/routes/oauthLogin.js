@@ -57,6 +57,22 @@ function serializeTokens(tokens) {
     };
 }
 
+function recordOAuthLogin(req, overrides = {}) {
+    const meta = getRequestMetadata(req);
+    LoginHistory.create({
+        userId: overrides.userId || null,
+        username: overrides.username || null,
+        method: 'oauth',
+        provider: overrides.provider || null,
+        identifier: overrides.identifier || null,
+        success: overrides.success !== undefined ? overrides.success : true,
+        ip: meta.ip,
+        userAgent: meta.userAgent,
+        sessionId: overrides.sessionId || null,
+        failureReason: overrides.failureReason || null,
+    }).catch(() => { });
+}
+
 // POST /auth/oauth/:provider/authorize — Public, returns { authorizeUrl }
 router.post('/:provider/authorize', oauthLoginLimiter, asyncHandler(async (req, res) => {
     const { provider } = req.params;
@@ -109,15 +125,13 @@ async function handleOAuthLoginCallback(req, res, { provider, code, state, oauth
         const reqMeta = getRequestMetadata(req);
         const result = await completeOAuthLogin(provider, code, statePayload, reqMeta);
 
-        LoginHistory.create({
+        recordOAuthLogin(req, {
             userId: result.user._id,
             username: result.user.username,
-            method: `oauth:${provider}`,
-            success: true,
-            ip: reqMeta.ip,
-            userAgent: reqMeta.userAgent,
+            provider,
+            identifier: result.user.email || result.user.username || null,
             sessionId: result.tokens.sessionId,
-        }).catch(() => { });
+        });
 
         return res.redirect(
             buildOAuthCallbackUrl({
@@ -127,15 +141,14 @@ async function handleOAuthLoginCallback(req, res, { provider, code, state, oauth
             })
         );
     } catch (err) {
-        LoginHistory.create({
-            userId: null,
-            username: null,
-            method: `oauth:${provider}`,
+        recordOAuthLogin(req, {
+            userId: err?.user?._id || null,
+            username: err?.user?.username || null,
+            provider,
+            identifier: err?.user?.email || err?.user?.username || null,
             success: false,
-            ip: getRequestMetadata(req).ip,
-            userAgent: getRequestMetadata(req).userAgent,
-            failureReason: err.message || 'OAuth login failed',
-        }).catch(() => { });
+            failureReason: err.code || err.message || 'OAuth login failed',
+        });
 
         return res.redirect(
             buildOAuthCallbackUrl({

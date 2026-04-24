@@ -4,16 +4,24 @@ const loginHistorySchema = new mongoose.Schema({
     userId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
-        required: true,
+        default: null,
     },
     username: {
         type: String,
-        required: true,
+        default: null,
     },
     method: {
         type: String,
-        enum: ['password', 'qr', 'agent', 'refresh'],
+        enum: ['password', 'qr', 'agent', 'refresh', 'oauth'],
         default: 'password',
+    },
+    provider: {
+        type: String,
+        default: null,
+    },
+    identifier: {
+        type: String,
+        default: null,
     },
     success: {
         type: Boolean,
@@ -40,6 +48,6 @@ const loginHistorySchema = new mongoose.Schema({
 });
 
 loginHistorySchema.index({ userId: 1, createdAt: -1 });
-loginHistorySchema.index({ createdAt: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
+loginHistorySchema.index({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 });
 
 module.exports = mongoose.model('LoginHistory', loginHistorySchema);

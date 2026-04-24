@@ -26,6 +26,8 @@ const LoginHistory = require('../models/LoginHistory');
 const { generateSecret, verifyTOTP, buildOtpauthUri, generateRecoveryCodes } = require('../services/totp');
 
 const router = express.Router();
+const LOGIN_HISTORY_RETENTION_DAYS = 30;
+const LOGIN_HISTORY_RETENTION_MS = LOGIN_HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -113,6 +115,10 @@ function serializeTokens(tokens) {
     };
 }
 
+function getLoginHistoryCutoffDate() {
+    return new Date(Date.now() - LOGIN_HISTORY_RETENTION_MS);
+}
+
 function registerIssuedSession(user, tokens, req, options = {}) {
     const metadata = getRequestMetadata(req);
 
@@ -133,9 +139,11 @@ function registerIssuedSession(user, tokens, req, options = {}) {
 function recordLogin(userId, username, req, overrides = {}) {
     const meta = getRequestMetadata(req);
     LoginHistory.create({
-        userId,
-        username,
+        userId: userId || null,
+        username: username || null,
         method: overrides.method || 'password',
+        provider: overrides.provider || null,
+        identifier: normalizeText(overrides.identifier) || null,
         success: overrides.success !== undefined ? overrides.success : true,
         ip: meta.ip,
         userAgent: meta.userAgent,
@@ -212,14 +220,19 @@ async function findUserForLogin(identifier) {
     }).select('+password +twoFactor.secret +twoFactor.recoveryCodes');
 }
 
-async function authenticateUserCredentials(identifier, password) {
+async function verifyUserCredentials(identifier, password) {
     const user = await findUserForLogin(identifier);
     if (!user) {
-        return null;
+        return {
+            user: null,
+            passwordValid: false,
+        };
     }
 
-    const isValidPassword = await user.matchPassword(password);
-    return isValidPassword ? user : null;
+    return {
+        user,
+        passwordValid: await user.matchPassword(password),
+    };
 }
 
 async function findOrCreateAgentForUser(user, agentId) {
@@ -275,8 +288,25 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
         throw createHttpError(400, 'LOGIN_FIELDS_REQUIRED', 'Username or email and password are required');
     }
 
-    const user = await authenticateUserCredentials(username, password);
-    if (!user) {
+    const credentials = await verifyUserCredentials(username, password);
+    if (!credentials.user) {
+        recordLogin(null, null, req, {
+            method: 'password',
+            success: false,
+            failureReason: 'INVALID_CREDENTIALS',
+            identifier: username,
+        });
+        throw createHttpError(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
+    }
+
+    const user = credentials.user;
+    if (!credentials.passwordValid) {
+        recordLogin(user._id, user.username, req, {
+            method: 'password',
+            success: false,
+            failureReason: 'INVALID_CREDENTIALS',
+            identifier: username,
+        });
         throw createHttpError(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
     }
 
@@ -295,13 +325,18 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
                 method: 'password',
                 success: false,
                 failureReason: 'INVALID_TOTP_TOKEN',
+                identifier: username,
             });
             throw createHttpError(401, 'INVALID_TOTP_TOKEN', 'Invalid authentication code');
         }
     }
 
     const tokens = await issueSessionTokens(user, req);
-    recordLogin(user._id, user.username, req, { method: 'password', sessionId: tokens.sessionId });
+    recordLogin(user._id, user.username, req, {
+        method: 'password',
+        sessionId: tokens.sessionId,
+        identifier: username,
+    });
     return ok(res, {
         user: serializeUser(user),
         tokens: serializeTokens(tokens),
@@ -318,7 +353,23 @@ router.post('/agent/login', loginLimiter, asyncHandler(async (req, res) => {
     }
 
     const user = await User.findOne({ email, isActive: true }).select('+password');
-    if (!user || !(await user.matchPassword(password))) {
+    if (!user) {
+        recordLogin(null, null, req, {
+            method: 'agent',
+            success: false,
+            failureReason: 'INVALID_CREDENTIALS',
+            identifier: email,
+        });
+        throw createHttpError(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
+    }
+
+    if (!(await user.matchPassword(password))) {
+        recordLogin(user._id, user.username, req, {
+            method: 'agent',
+            success: false,
+            failureReason: 'INVALID_CREDENTIALS',
+            identifier: email,
+        });
         throw createHttpError(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
     }
 
@@ -328,7 +379,11 @@ router.post('/agent/login', loginLimiter, asyncHandler(async (req, res) => {
     }
 
     const tokens = await issueSessionTokens(user, req);
-    recordLogin(user._id, user.username, req, { method: 'agent', sessionId: tokens.sessionId });
+    recordLogin(user._id, user.username, req, {
+        method: 'agent',
+        sessionId: tokens.sessionId,
+        identifier: email,
+    });
     return ok(res, {
         user: serializeUser(user),
         agent: {
@@ -412,19 +467,24 @@ router.get('/me', authenticateToken, asyncHandler(async (req, res) => {
 router.get('/login-history', authenticateToken, asyncHandler(async (req, res) => {
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
     const page = Math.max(Number(req.query.page) || 1, 1);
+    const query = {
+        userId: req.user._id,
+        createdAt: { $gte: getLoginHistoryCutoffDate() },
+    };
 
-    const entries = await LoginHistory.find({ userId: req.user._id })
+    const entries = await LoginHistory.find(query)
         .sort({ createdAt: -1 })
         .limit(limit)
         .skip((page - 1) * limit)
         .lean();
 
-    const total = await LoginHistory.countDocuments({ userId: req.user._id });
+    const total = await LoginHistory.countDocuments(query);
 
     return ok(res, {
         history: entries,
         entries,
         pagination: { current: page, pages: Math.ceil(total / limit), total },
+        retentionDays: LOGIN_HISTORY_RETENTION_DAYS,
     });
 }));
 
@@ -587,8 +647,25 @@ router.post('/qr/authenticate', asyncHandler(async (req, res) => {
         throw createHttpError(400, 'QR_AUTH_FIELDS_REQUIRED', 'QR code, username or email, and password are required');
     }
 
-    const user = await authenticateUserCredentials(username, password);
-    if (!user) {
+    const credentials = await verifyUserCredentials(username, password);
+    if (!credentials.user) {
+        recordLogin(null, null, req, {
+            method: 'qr',
+            success: false,
+            failureReason: 'INVALID_CREDENTIALS',
+            identifier: username,
+        });
+        throw createHttpError(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
+    }
+
+    const user = credentials.user;
+    if (!credentials.passwordValid) {
+        recordLogin(user._id, user.username, req, {
+            method: 'qr',
+            success: false,
+            failureReason: 'INVALID_CREDENTIALS',
+            identifier: username,
+        });
         throw createHttpError(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
     }
 
@@ -613,6 +690,11 @@ router.post('/qr/authenticate', asyncHandler(async (req, res) => {
     }
 
     const tokens = await ensureQrIssuedTokens(qrCode, user, req);
+    recordLogin(user._id, user.username, req, {
+        method: 'qr',
+        sessionId: tokens.sessionId || null,
+        identifier: username,
+    });
 
     return ok(res, {
         user: serializeUser(user),

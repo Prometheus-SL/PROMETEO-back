@@ -1,8 +1,10 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const request = require('supertest');
 
 const User = require('../src/models/User');
 const { buildOAuthCallbackUrl } = require('../src/services/oauthLogin');
+const { createRouteApp } = require('./helpers/routeApp');
 
 test('OAuth callback puts tokens in the URL fragment, not query params', () => {
     const url = new URL(buildOAuthCallbackUrl({
@@ -45,4 +47,58 @@ test('password is required for password users but optional for OAuth users', () 
     });
     const oauthError = oauthUser.validateSync();
     assert.equal(oauthError?.errors?.password, undefined);
+});
+
+function createOAuthLoginRouteApp(options = {}) {
+    const createdLoginHistoryEntries = options.createdLoginHistoryEntries || [];
+
+    return createRouteApp({
+        routePath: 'src/routes/oauthLogin.js',
+        mountPath: '/auth/oauth',
+        mocks: {
+            'src/models/LoginHistory.js': {
+                create: async (entry) => {
+                    createdLoginHistoryEntries.push(entry);
+                    return entry;
+                },
+            },
+            'src/services/oauthLogin.js': {
+                assertValidProvider: () => {},
+                buildOAuthCallbackUrl: ({ origin, status }) => `${origin}/oauth/callback#status=${status}`,
+                buildOAuthLoginUrl: () => 'https://provider.test/oauth',
+                completeOAuthLogin: async () => ({
+                    user: {
+                        _id: '507f1f77bcf86cd799439011',
+                        username: 'mike',
+                    },
+                    tokens: {
+                        accessToken: 'access-token',
+                        refreshToken: 'refresh-token',
+                        sessionId: 'session-1',
+                    },
+                }),
+                verifyOAuthLoginState: () => ({
+                    returnOrigin: 'http://client.test',
+                }),
+            },
+        },
+    });
+}
+
+test('OAuth callback records provider logins with normalized oauth metadata', async (t) => {
+    const createdLoginHistoryEntries = [];
+    const { app, cleanup } = createOAuthLoginRouteApp({ createdLoginHistoryEntries });
+    t.after(cleanup);
+
+    const response = await request(app)
+        .get('/auth/oauth/google/callback')
+        .query({ code: 'oauth-code', state: 'signed-state' });
+
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.location, 'http://client.test/oauth/callback#status=success');
+    assert.equal(createdLoginHistoryEntries.length, 1);
+    assert.equal(createdLoginHistoryEntries[0].method, 'oauth');
+    assert.equal(createdLoginHistoryEntries[0].provider, 'google');
+    assert.equal(createdLoginHistoryEntries[0].success, true);
+    assert.equal(createdLoginHistoryEntries[0].sessionId, 'session-1');
 });

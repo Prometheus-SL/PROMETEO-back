@@ -27,6 +27,8 @@ function createAuthRouteApp(options = {}) {
     const loginUser = options.loginUser || createMockUser();
     const refreshUser = options.refreshUser || loginUser;
     const loginHistoryEntries = options.loginHistoryEntries || [];
+    const createdLoginHistoryEntries = options.createdLoginHistoryEntries || [];
+    const loginHistoryQueries = options.loginHistoryQueries || [];
 
     const mocks = {
         'src/models/User.js': {
@@ -41,8 +43,12 @@ function createAuthRouteApp(options = {}) {
             },
         },
         'src/models/LoginHistory.js': {
-            create: async () => ({}),
-            find() {
+            create: async (entry) => {
+                createdLoginHistoryEntries.push(entry);
+                return entry;
+            },
+            find(query) {
+                loginHistoryQueries.push(query);
                 return {
                     sort() {
                         return {
@@ -212,6 +218,32 @@ test('POST /auth/login accepts a valid second factor and issues tokens', async (
     assert.equal(registeredSession.sessionId, 'session-1');
 });
 
+test('POST /auth/login records a failed password attempt for a known user', async (t) => {
+    const createdLoginHistoryEntries = [];
+    const loginUser = createMockUser({
+        matchPassword: async () => false,
+    });
+
+    const { app, cleanup } = createAuthRouteApp({
+        loginUser,
+        createdLoginHistoryEntries,
+    });
+    t.after(cleanup);
+
+    const response = await request(app)
+        .post('/auth/login')
+        .send({ username: 'mike', password: 'wrong-password' });
+
+    assert.equal(response.status, 401);
+    assert.equal(createdLoginHistoryEntries.length, 1);
+    assert.equal(createdLoginHistoryEntries[0].userId, loginUser._id);
+    assert.equal(createdLoginHistoryEntries[0].username, loginUser.username);
+    assert.equal(createdLoginHistoryEntries[0].method, 'password');
+    assert.equal(createdLoginHistoryEntries[0].success, false);
+    assert.equal(createdLoginHistoryEntries[0].failureReason, 'INVALID_CREDENTIALS');
+    assert.equal(createdLoginHistoryEntries[0].identifier, 'mike');
+});
+
 test('POST /auth/refresh returns the refreshed token envelope', async (t) => {
     let removedToken = null;
     let registeredSession = null;
@@ -258,4 +290,24 @@ test('GET /auth/login-history returns history and entries aliases', async (t) =>
     assert.equal(response.status, 200);
     assert.deepEqual(response.body.data.history, loginHistoryEntries);
     assert.deepEqual(response.body.data.entries, loginHistoryEntries);
+});
+
+test('GET /auth/login-history scopes entries to the retained 30-day window', async (t) => {
+    const loginHistoryQueries = [];
+    const now = Date.now();
+    const { app, cleanup } = createAuthRouteApp({ loginHistoryQueries });
+    t.after(cleanup);
+
+    const response = await request(app).get('/auth/login-history');
+
+    assert.equal(response.status, 200);
+    assert.equal(loginHistoryQueries.length, 1);
+    assert.equal(loginHistoryQueries[0].userId, '507f1f77bcf86cd799439011');
+    assert.ok(loginHistoryQueries[0].createdAt?.$gte instanceof Date);
+
+    const cutoffAgeMs = now - loginHistoryQueries[0].createdAt.$gte.getTime();
+    const twentyNineDaysMs = 29 * 24 * 60 * 60 * 1000;
+    const thirtyOneDaysMs = 31 * 24 * 60 * 60 * 1000;
+    assert.ok(cutoffAgeMs >= twentyNineDaysMs);
+    assert.ok(cutoffAgeMs <= thirtyOneDaysMs);
 });
