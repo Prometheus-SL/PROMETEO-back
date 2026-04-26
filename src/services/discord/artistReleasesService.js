@@ -6,6 +6,7 @@ const { createSpotifyArtistCatalog } = require('./spotifyArtistCatalog');
 
 const MAX_SUBS_PER_GUILD = 25;
 const VALID_RELEASE_TYPES = ['album', 'single', 'compilation', 'appears_on'];
+const SEED_RELEASES_LIMIT = 50;
 
 function publicSubscription(sub) {
     return {
@@ -177,17 +178,41 @@ async function saveStatusForUser(
             (existing?.artistReleases?.subscriptions ?? []).map((s) => [s.artistId, s]),
         );
 
-        const subscriptions = resolvedArtists.map(({ artistId, artist }) => {
-            const prev = previousSubs.get(artistId);
-            return {
-                artistId,
-                name: artist.name,
-                imageUrl: artist.imageUrl ?? null,
-                lastNotifiedIds: prev?.lastNotifiedIds ?? [],
-                lastNotifiedAt: prev?.lastNotifiedAt ?? null,
-                lastError: prev?.lastError ?? null,
-            };
-        });
+        const subscriptions = await Promise.all(
+            resolvedArtists.map(async ({ artistId, artist }) => {
+                const prev = previousSubs.get(artistId);
+                if (prev) {
+                    return {
+                        artistId,
+                        name: artist.name,
+                        imageUrl: artist.imageUrl ?? null,
+                        lastNotifiedIds: prev.lastNotifiedIds ?? [],
+                        lastNotifiedAt: prev.lastNotifiedAt ?? null,
+                        lastError: prev.lastError ?? null,
+                    };
+                }
+
+                let seedIds = [];
+                try {
+                    const releases = await provider.fetchLatestReleases(artistId, {
+                        limit: SEED_RELEASES_LIMIT,
+                        includeGroups: includeTypes,
+                    });
+                    seedIds = Array.isArray(releases) ? releases.map((r) => r.id) : [];
+                } catch (_err) {
+                    seedIds = [];
+                }
+
+                return {
+                    artistId,
+                    name: artist.name,
+                    imageUrl: artist.imageUrl ?? null,
+                    lastNotifiedIds: seedIds,
+                    lastNotifiedAt: null,
+                    lastError: null,
+                };
+            }),
+        );
 
         await Model.findOneAndUpdate(
             { guildId },
