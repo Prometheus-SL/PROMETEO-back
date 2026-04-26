@@ -1,7 +1,4 @@
 const express = require('express');
-const path = require('path');
-const fs = require('fs');
-const fsPromises = require('fs/promises');
 const multer = require('multer');
 const User = require('../models/User');
 const { authenticateToken } = require('../middleware/auth');
@@ -53,18 +50,8 @@ const upload = multer({
     limits: { fileSize: AVATAR_MAX_BYTES, files: 1 },
 });
 
-function getAvatarsDir() {
-    if (process.env.AVATARS_DIR_OVERRIDE) {
-        fs.mkdirSync(process.env.AVATARS_DIR_OVERRIDE, { recursive: true });
-        return process.env.AVATARS_DIR_OVERRIDE;
-    }
-    const dir = path.join(__dirname, '..', '..', 'uploads', 'avatars');
-    fs.mkdirSync(dir, { recursive: true });
-    return dir;
-}
-
 function avatarUrlFor(userId) {
-    return `/uploads/avatars/${userId}.webp`;
+    return `/api/v1/account/avatar/${userId}`;
 }
 
 function normalizeText(value) {
@@ -314,13 +301,8 @@ router.post(
         }
 
         const { buffer } = await processAvatarImage(req.file.buffer);
-        const avatarsDir = getAvatarsDir();
-        const finalPath = path.join(avatarsDir, `${user._id}.webp`);
-        const tempPath = `${finalPath}.tmp`;
 
-        await fsPromises.writeFile(tempPath, buffer);
-        await fsPromises.rename(tempPath, finalPath);
-
+        user.avatarData = buffer;
         user.avatarUrl = avatarUrlFor(user._id);
         user.avatarUpdatedAt = new Date();
         await user.save();
@@ -329,22 +311,25 @@ router.post(
     }),
 );
 
+router.get('/avatar/:userId', asyncHandler(async (req, res) => {
+    const user = await User.findById(req.params.userId).select('+avatarData');
+    if (!user || !user.avatarData) {
+        throw createHttpError(404, 'AVATAR_NOT_FOUND', 'Avatar not found.');
+    }
+
+    res.set('Content-Type', 'image/webp');
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.set('Cache-Control', 'private, max-age=0, must-revalidate');
+    return res.send(user.avatarData);
+}));
+
 router.delete('/avatar', authenticateToken, asyncHandler(async (req, res) => {
     const user = await User.findById(req.user._id);
     if (!user) {
         throw createHttpError(404, 'USER_NOT_FOUND', 'User not found.');
     }
 
-    const avatarsDir = getAvatarsDir();
-    const filePath = path.join(avatarsDir, `${user._id}.webp`);
-    try {
-        await fsPromises.unlink(filePath);
-    } catch (error) {
-        if (error.code !== 'ENOENT') {
-            throw error;
-        }
-    }
-
+    user.avatarData = null;
     user.avatarUrl = null;
     user.avatarUpdatedAt = null;
     await user.save();

@@ -387,6 +387,11 @@ const userSchema = new mongoose.Schema({
         type: Date,
         default: null,
     },
+    avatarData: {
+        type: Buffer,
+        default: null,
+        select: false,
+    },
     birthday: {
         type: Date,
     },

@@ -319,7 +319,7 @@ async function makeJpegBuffer() {
     }).jpeg().toBuffer();
 }
 
-test('POST /api/v1/account/avatar stores the processed avatar and updates the user', async (t) => {
+test('POST /api/v1/account/avatar stores the processed avatar in the user document', async (t) => {
     let saveCalled = false;
 
     const user = {
@@ -328,6 +328,7 @@ test('POST /api/v1/account/avatar stores the processed avatar and updates the us
         email: 'mike@example.com',
         role: 'user',
         linkedAccounts: {},
+        avatarData: null,
         avatarUrl: null,
         avatarUpdatedAt: null,
         save: async () => { saveCalled = true; },
@@ -336,16 +337,6 @@ test('POST /api/v1/account/avatar stores the processed avatar and updates the us
     const { app, cleanup } = createMutationRouteApp({ user });
     t.after(cleanup);
 
-    const os = require('os');
-    const path = require('path');
-    const fs = require('fs');
-    process.env.AVATARS_DIR_OVERRIDE = fs.mkdtempSync(path.join(os.tmpdir(), 'avatars-'));
-
-    t.after(() => {
-        fs.rmSync(process.env.AVATARS_DIR_OVERRIDE, { recursive: true, force: true });
-        delete process.env.AVATARS_DIR_OVERRIDE;
-    });
-
     const buf = await makeJpegBuffer();
     const response = await request(app)
         .post('/api/v1/account/avatar')
@@ -353,12 +344,13 @@ test('POST /api/v1/account/avatar stores the processed avatar and updates the us
 
     assert.equal(response.status, 200);
     assert.equal(response.body.success, true);
-    assert.equal(response.body.data.user.avatarUrl, '/uploads/avatars/user-123.webp');
+    assert.equal(response.body.data.user.avatarUrl, '/api/v1/account/avatar/user-123');
     assert.ok(response.body.data.user.avatarUpdatedAt);
-    assert.equal(user.avatarUrl, '/uploads/avatars/user-123.webp');
+    assert.equal(user.avatarUrl, '/api/v1/account/avatar/user-123');
     assert.ok(user.avatarUpdatedAt instanceof Date);
+    assert.ok(Buffer.isBuffer(user.avatarData));
+    assert.ok(user.avatarData.length > 0);
     assert.equal(saveCalled, true);
-    assert.ok(fs.existsSync(path.join(process.env.AVATARS_DIR_OVERRIDE, 'user-123.webp')));
 });
 
 test('POST /api/v1/account/avatar rejects a non-image upload with AVATAR_TYPE_INVALID', async (t) => {
@@ -407,21 +399,7 @@ test('POST /api/v1/account/avatar rejects a missing file with AVATAR_FILE_REQUIR
     assert.equal(response.body.error.code, 'AVATAR_FILE_REQUIRED');
 });
 
-test('DELETE /api/v1/account/avatar clears the avatar fields and deletes the file', async (t) => {
-    const os = require('os');
-    const path = require('path');
-    const fs = require('fs');
-
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'avatars-'));
-    process.env.AVATARS_DIR_OVERRIDE = tmp;
-    const existingFile = path.join(tmp, 'user-456.webp');
-    fs.writeFileSync(existingFile, Buffer.from([0x52, 0x49, 0x46, 0x46])); // dummy bytes
-
-    t.after(() => {
-        fs.rmSync(tmp, { recursive: true, force: true });
-        delete process.env.AVATARS_DIR_OVERRIDE;
-    });
-
+test('DELETE /api/v1/account/avatar clears the avatar fields on the user document', async (t) => {
     let saveCalled = false;
     const user = {
         _id: 'user-456',
@@ -429,7 +407,8 @@ test('DELETE /api/v1/account/avatar clears the avatar fields and deletes the fil
         email: 'mike@example.com',
         role: 'user',
         linkedAccounts: {},
-        avatarUrl: '/uploads/avatars/user-456.webp',
+        avatarData: Buffer.from([0x52, 0x49, 0x46, 0x46]),
+        avatarUrl: '/api/v1/account/avatar/user-456',
         avatarUpdatedAt: new Date('2026-04-20T12:00:00Z'),
         save: async () => { saveCalled = true; },
     };
@@ -445,29 +424,18 @@ test('DELETE /api/v1/account/avatar clears the avatar fields and deletes the fil
     assert.equal(response.body.data.user.avatarUpdatedAt, null);
     assert.equal(user.avatarUrl, null);
     assert.equal(user.avatarUpdatedAt, null);
+    assert.equal(user.avatarData, null);
     assert.equal(saveCalled, true);
-    assert.equal(fs.existsSync(existingFile), false);
 });
 
-test('DELETE /api/v1/account/avatar is idempotent when the file is missing', async (t) => {
-    const os = require('os');
-    const path = require('path');
-    const fs = require('fs');
-
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'avatars-'));
-    process.env.AVATARS_DIR_OVERRIDE = tmp;
-
-    t.after(() => {
-        fs.rmSync(tmp, { recursive: true, force: true });
-        delete process.env.AVATARS_DIR_OVERRIDE;
-    });
-
+test('DELETE /api/v1/account/avatar is idempotent when there is no avatar', async (t) => {
     const user = {
         _id: 'user-789',
         username: 'mike',
         email: 'mike@example.com',
         role: 'user',
         linkedAccounts: {},
+        avatarData: null,
         avatarUrl: null,
         avatarUpdatedAt: null,
         save: async () => {},
@@ -480,4 +448,52 @@ test('DELETE /api/v1/account/avatar is idempotent when the file is missing', asy
 
     assert.equal(response.status, 200);
     assert.equal(response.body.data.user.avatarUrl, null);
+});
+
+test('GET /api/v1/account/avatar/:userId returns the avatar bytes when present', async (t) => {
+    const buf = await makeJpegBuffer();
+    const user = {
+        _id: 'user-123',
+        username: 'mike',
+        email: 'mike@example.com',
+        role: 'user',
+        linkedAccounts: {},
+        avatarData: buf,
+        avatarUrl: '/api/v1/account/avatar/user-123',
+        avatarUpdatedAt: new Date(),
+        save: async () => {},
+    };
+
+    const { app, cleanup } = createMutationRouteApp({ user });
+    t.after(cleanup);
+
+    const response = await request(app).get('/api/v1/account/avatar/user-123');
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers['content-type'], 'image/webp');
+    assert.equal(response.headers['cross-origin-resource-policy'], 'cross-origin');
+    assert.ok(response.body.length > 0);
+    assert.deepEqual(Buffer.from(response.body), buf);
+});
+
+test('GET /api/v1/account/avatar/:userId returns 404 when there is no avatar', async (t) => {
+    const user = {
+        _id: 'user-789',
+        username: 'mike',
+        email: 'mike@example.com',
+        role: 'user',
+        linkedAccounts: {},
+        avatarData: null,
+        avatarUrl: null,
+        avatarUpdatedAt: null,
+        save: async () => {},
+    };
+
+    const { app, cleanup } = createMutationRouteApp({ user });
+    t.after(cleanup);
+
+    const response = await request(app).get('/api/v1/account/avatar/user-789');
+
+    assert.equal(response.status, 404);
+    assert.equal(response.body.error.code, 'AVATAR_NOT_FOUND');
 });
