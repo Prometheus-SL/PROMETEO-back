@@ -909,10 +909,34 @@ router.post('/2fa/disable', authenticateToken, asyncHandler(async (req, res) => 
     return ok(res, null, { message: '2FA disabled' });
 }));
 
+router.post('/2fa/recovery-codes/regenerate', authenticateToken, asyncHandler(async (req, res) => {
+    const { token } = req.body || {};
+    const user = await User.findById(req.user._id).select('+twoFactor.secret +twoFactor.recoveryCodes');
+
+    if (!user.twoFactor?.enabled) {
+        throw createHttpError(400, '2FA_NOT_ENABLED', '2FA is not enabled');
+    }
+
+    if (!token || !verifyTOTP(user.twoFactor.secret, token)) {
+        throw createHttpError(401, 'INVALID_TOTP_TOKEN', 'A valid TOTP token is required to regenerate recovery codes');
+    }
+
+    const codes = generateRecoveryCodes();
+    user.twoFactor.recoveryCodes = codes.map((code) => crypto.createHash('sha256').update(code).digest('hex'));
+    await user.save();
+
+    return ok(res, { recoveryCodes: codes }, { message: 'Recovery codes regenerated. Save the new set in a safe place.' });
+}));
+
 router.get('/2fa/status', authenticateToken, asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user._id).select('+twoFactor.recoveryCodes');
+
     return ok(res, {
-        enabled: req.user.twoFactor?.enabled || false,
-        enabledAt: req.user.twoFactor?.enabledAt || null,
+        enabled: user.twoFactor?.enabled || false,
+        enabledAt: user.twoFactor?.enabledAt || null,
+        recoveryCodesRemaining: Array.isArray(user.twoFactor?.recoveryCodes)
+            ? user.twoFactor.recoveryCodes.length
+            : 0,
     });
 }));
 
