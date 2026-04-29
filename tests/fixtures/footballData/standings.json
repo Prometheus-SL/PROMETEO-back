@@ -1,0 +1,25 @@
+{
+  "competition": { "id": 2014, "name": "LaLiga", "code": "PD" },
+  "season": { "id": 1, "startDate": "2025-08-01", "endDate": "2026-05-31", "currentMatchday": 32 },
+  "standings": [
+    {
+      "stage": "REGULAR_SEASON",
+      "type": "TOTAL",
+      "group": null,
+      "table": [
+        {
+          "position": 1,
+          "team": { "id": 81, "name": "FC Barcelona", "shortName": "Barça", "tla": "FCB", "crest": "https://crests.football-data.org/81.svg" },
+          "playedGames": 32, "form": "W,W,W,D,L", "won": 22, "draw": 5, "lost": 5,
+          "goalsFor": 70, "goalsAgainst": 32, "goalDifference": 38, "points": 71
+        },
+        {
+          "position": 2,
+          "team": { "id": 86, "name": "Real Madrid CF", "shortName": "Real Madrid", "tla": "RMA", "crest": "https://crests.football-data.org/86.png" },
+          "playedGames": 32, "form": "W,L,D,W,W", "won": 21, "draw": 6, "lost": 5,
+          "goalsFor": 65, "goalsAgainst": 28, "goalDifference": 37, "points": 69
+        }
+      ]
+    }
+  ]
+}

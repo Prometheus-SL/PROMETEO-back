@@ -93,6 +93,7 @@ const { errorHandler, customLogger, notFoundHandler } = require('./middleware/er
 const dashboardRoutes = require('./routes/dashboard');
 const spotifyRoutes = require('./routes/spotify');
 const weatherRoutes = require('./routes/weather');
+const footballRoutes = require('./routes/football');
 const whatsappRoutes = require('./routes/whatsapp');
 const discordRoutes = require('./routes/discord');
 const googleRoutes = require('./routes/google');
@@ -107,6 +108,7 @@ app.use('/api/v1/account', accountRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
 app.use('/api/v1/integrations/spotify', spotifyRoutes);
 app.use('/api/v1/integrations/weather', weatherRoutes);
+app.use('/api/v1/integrations/football', footballRoutes);
 app.use('/api/v1/whatsapp', whatsappRoutes);
 app.use('/api/v1/discord', discordRoutes);
 app.use('/api/v1/google', googleRoutes);

@@ -1,0 +1,24 @@
+{
+  "matches": [
+    {
+      "id": 489050,
+      "competition": { "id": 2014, "name": "LaLiga", "code": "PD" },
+      "matchday": 31,
+      "utcDate": "2026-04-21T19:00:00Z",
+      "status": "FINISHED",
+      "homeTeam": { "id": 86, "name": "Real Madrid CF", "shortName": "Real Madrid", "tla": "RMA", "crest": "https://crests.football-data.org/86.png" },
+      "awayTeam": { "id": 81, "name": "FC Barcelona", "shortName": "Barça", "tla": "FCB", "crest": "https://crests.football-data.org/81.svg" },
+      "score": { "winner": "HOME_TEAM", "fullTime": { "home": 2, "away": 1 }, "halfTime": { "home": 1, "away": 0 } }
+    },
+    {
+      "id": 489051,
+      "competition": { "id": 2014, "name": "LaLiga", "code": "PD" },
+      "matchday": 32,
+      "utcDate": "2026-04-28T19:00:00Z",
+      "status": "IN_PLAY",
+      "homeTeam": { "id": 78, "name": "Club Atlético de Madrid", "shortName": "Atlético", "tla": "ATM", "crest": "https://crests.football-data.org/78.svg" },
+      "awayTeam": { "id": 86, "name": "Real Madrid CF", "shortName": "Real Madrid", "tla": "RMA", "crest": "https://crests.football-data.org/86.png" },
+      "score": { "winner": null, "fullTime": { "home": 0, "away": 1 }, "halfTime": { "home": 0, "away": 1 } }
+    }
+  ]
+}

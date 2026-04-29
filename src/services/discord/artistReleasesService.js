@@ -181,12 +181,15 @@ async function saveStatusForUser(
         const subscriptions = await Promise.all(
             resolvedArtists.map(async ({ artistId, artist }) => {
                 const prev = previousSubs.get(artistId);
-                if (prev) {
+                const prevIds = prev?.lastNotifiedIds ?? [];
+                const needsSeed = !prev || (prevIds.length === 0 && !prev.lastNotifiedAt);
+
+                if (!needsSeed) {
                     return {
                         artistId,
                         name: artist.name,
                         imageUrl: artist.imageUrl ?? null,
-                        lastNotifiedIds: prev.lastNotifiedIds ?? [],
+                        lastNotifiedIds: prevIds,
                         lastNotifiedAt: prev.lastNotifiedAt ?? null,
                         lastError: prev.lastError ?? null,
                     };
@@ -208,7 +211,7 @@ async function saveStatusForUser(
                     name: artist.name,
                     imageUrl: artist.imageUrl ?? null,
                     lastNotifiedIds: seedIds,
-                    lastNotifiedAt: null,
+                    lastNotifiedAt: prev?.lastNotifiedAt ?? null,
                     lastError: null,
                 };
             }),
