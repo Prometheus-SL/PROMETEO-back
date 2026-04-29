@@ -6,9 +6,14 @@ const FOOTBALL_DATA_BASE_URL = 'https://api.football-data.org/v4';
 const YOUTUBE_API_BASE_URL = 'https://www.googleapis.com/youtube/v3';
 
 // TTLs aligned with the 10 req/min free tier of football-data.org.
+// MATCHES_WINDOW is intentionally short (30s) so live scores propagate quickly
+// during in-progress matches — the frontend polls at 30s during 'live' state,
+// so the cache refresh aligns with each poll rather than holding 60s-old data.
+// At 30s TTL we hit upstream at most 120 times/hour per league = 2/min,
+// well under the 10/min free-tier rate limit even with several leagues active.
 const TTL = Object.freeze({
     STANDINGS: 5 * 60 * 1000,        // 5 min
-    MATCHES_WINDOW: 60 * 1000,       // 1 min — short to capture live updates.
+    MATCHES_WINDOW: 30 * 1000,       // 30s — match the frontend's live polling.
     LEAGUES: 24 * 60 * 60 * 1000,    // 24h — static metadata.
     LEAGUE_TEAMS: 24 * 60 * 60 * 1000, // 24h — team list rarely changes.
 });
