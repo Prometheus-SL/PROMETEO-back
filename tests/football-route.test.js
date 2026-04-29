@@ -64,24 +64,33 @@ function buildApp(serviceOverrides = {}) {
                 createFootballService: () => service,
             },
             'src/services/footballLeagues.js': {
-                listLeagues: () => [{
-                    id: 'laliga',
-                    label: 'LaLiga',
-                    country: 'Spain',
-                    highlights: { channelUrl: 'https://yt.example/test', channelLabel: 'LaLiga on YouTube' }
-                }],
-                isSupportedLeague: (id) => id === 'laliga',
+                listLeagues: () => [
+                    {
+                        id: 'laliga',
+                        label: 'LaLiga',
+                        country: 'Spain',
+                        supportsStandings: true,
+                        highlights: { channelUrl: 'https://yt.example/laliga', channelLabel: 'LaLiga on YouTube' },
+                    },
+                    {
+                        id: 'champions',
+                        label: 'UEFA Champions League',
+                        country: 'Europe',
+                        supportsStandings: false,
+                        highlights: { channelUrl: 'https://yt.example/uefa', channelLabel: 'UEFA on YouTube' },
+                    },
+                ],
+                isSupportedLeague: (id) => id === 'laliga' || id === 'champions',
                 getLeague: (id) => {
-                    if (id !== 'laliga') {
-                        const err = new Error(`League "${id}" is not supported.`);
-                        err.statusCode = 400;
-                        err.status = 400;
-                        err.code = 'FOOTBALL_LEAGUE_UNSUPPORTED';
-                        throw err;
-                    }
-                    return { id: 'laliga', label: 'LaLiga', country: 'Spain', highlights: { channelUrl: 'https://yt.example/test', channelLabel: 'LaLiga on YouTube' } };
+                    if (id === 'laliga') return { id: 'laliga', label: 'LaLiga', country: 'Spain', supportsStandings: true, highlights: { channelUrl: 'https://yt.example/laliga', channelLabel: 'LaLiga on YouTube' } };
+                    if (id === 'champions') return { id: 'champions', label: 'UEFA Champions League', country: 'Europe', supportsStandings: false, highlights: { channelUrl: 'https://yt.example/uefa', channelLabel: 'UEFA on YouTube' } };
+                    const err = new Error(`League "${id}" is not supported.`);
+                    err.statusCode = 400;
+                    err.status = 400;
+                    err.code = 'FOOTBALL_LEAGUE_UNSUPPORTED';
+                    throw err;
                 },
-                SUPPORTED_LEAGUE_IDS: ['laliga'],
+                SUPPORTED_LEAGUE_IDS: ['laliga', 'champions'],
             },
         },
     });
@@ -94,13 +103,24 @@ test('GET /leagues returns the list of supported leagues', async (t) => {
     const res = await request(app).get('/api/v1/integrations/football/leagues');
     assert.equal(res.status, 200);
     assert.equal(res.body.success, true);
-    assert.deepEqual(res.body.data, [{
-        id: 'laliga',
-        label: 'LaLiga',
-        country: 'Spain',
-        highlightsChannelUrl: 'https://yt.example/test',
-        highlightsChannelLabel: 'LaLiga on YouTube',
-    }]);
+    assert.deepEqual(res.body.data, [
+        {
+            id: 'laliga',
+            label: 'LaLiga',
+            country: 'Spain',
+            supportsStandings: true,
+            highlightsChannelUrl: 'https://yt.example/laliga',
+            highlightsChannelLabel: 'LaLiga on YouTube',
+        },
+        {
+            id: 'champions',
+            label: 'UEFA Champions League',
+            country: 'Europe',
+            supportsStandings: false,
+            highlightsChannelUrl: 'https://yt.example/uefa',
+            highlightsChannelLabel: 'UEFA on YouTube',
+        },
+    ]);
 });
 
 test('GET /leagues/:leagueId/standings calls the service', async (t) => {

@@ -10,6 +10,7 @@ const TTL = Object.freeze({
     STANDINGS: 5 * 60 * 1000,        // 5 min
     MATCHES_WINDOW: 60 * 1000,       // 1 min — short to capture live updates.
     LEAGUES: 24 * 60 * 60 * 1000,    // 24h — static metadata.
+    LEAGUE_TEAMS: 24 * 60 * 60 * 1000, // 24h — team list rarely changes.
 });
 
 function buildYouTubeQuery(home, away, matchday, leagueLabel) {
@@ -251,6 +252,9 @@ function createFootballService({ fetch = globalThis.fetch, now = () => Date.now(
 
     async function getStandings(leagueId) {
         const league = getLeague(leagueId);
+        if (league.supportsStandings === false) {
+            return { leagueId, rows: [] };
+        }
         const key = `standings:${leagueId}`;
         return cache.fetch(key, TTL.STANDINGS, async () => {
             const payload = await callFootballData(
@@ -284,8 +288,15 @@ function createFootballService({ fetch = globalThis.fetch, now = () => Date.now(
     }
 
     async function listLeagueTeams(leagueId) {
-        const standings = await getStandings(leagueId);
-        return standings.rows.map((row) => row.team);
+        const league = getLeague(leagueId);
+        const key = `teams:${leagueId}`;
+        return cache.fetch(key, TTL.LEAGUE_TEAMS, async () => {
+            const payload = await callFootballData(
+                `/competitions/${league.footballData.code}/teams`,
+            );
+            const teams = Array.isArray(payload?.teams) ? payload.teams : [];
+            return teams.map(normalizeTeam);
+        });
     }
 
     async function searchTeams(leagueId, query) {

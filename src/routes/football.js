@@ -18,6 +18,7 @@ router.get(
             id: l.id,
             label: l.label,
             country: l.country,
+            supportsStandings: l.supportsStandings !== false,
             highlightsChannelUrl: l.highlights?.channelUrl ?? null,
             highlightsChannelLabel: l.highlights?.channelLabel ?? null,
         }));

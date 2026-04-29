@@ -8,28 +8,32 @@ const {
     isSupportedLeague,
 } = require('../src/services/footballLeagues');
 
-test('listLeagues returns the laliga entry with footballData code + highlights channel', () => {
+test('listLeagues returns the laliga and champions entries with metadata', () => {
     const leagues = listLeagues();
-    assert.equal(leagues.length, 1);
-    const laliga = leagues[0];
-    assert.equal(laliga.id, 'laliga');
+    assert.equal(leagues.length, 2);
+
+    const laliga = leagues.find((l) => l.id === 'laliga');
     assert.equal(laliga.label, 'LaLiga');
     assert.equal(laliga.country, 'Spain');
-    assert.equal(typeof laliga.footballData.code, 'string');
+    assert.equal(laliga.supportsStandings, true);
     assert.equal(laliga.footballData.code, 'PD');
     assert.equal(typeof laliga.highlights.channelUrl, 'string');
-    assert.ok(laliga.highlights.channelUrl.length > 0);
     assert.equal(typeof laliga.highlights.channelLabel, 'string');
-    assert.ok(laliga.highlights.channelLabel.length > 0);
+
+    const cl = leagues.find((l) => l.id === 'champions');
+    assert.equal(cl.label, 'UEFA Champions League');
+    assert.equal(cl.country, 'Europe');
+    assert.equal(cl.supportsStandings, false);
+    assert.equal(cl.footballData.code, 'CL');
 });
 
-test('SUPPORTED_LEAGUE_IDS contains laliga only', () => {
-    assert.deepEqual([...SUPPORTED_LEAGUE_IDS], ['laliga']);
+test('SUPPORTED_LEAGUE_IDS contains laliga and champions', () => {
+    assert.deepEqual([...SUPPORTED_LEAGUE_IDS].sort(), ['champions', 'laliga']);
 });
 
-test('getLeague returns the league entry for a supported id', () => {
-    const league = getLeague('laliga');
-    assert.equal(league.id, 'laliga');
+test('getLeague returns the league entry for laliga and champions', () => {
+    assert.equal(getLeague('laliga').id, 'laliga');
+    assert.equal(getLeague('champions').id, 'champions');
 });
 
 test('getLeague throws when the league id is unknown', () => {
@@ -39,9 +43,10 @@ test('getLeague throws when the league id is unknown', () => {
     );
 });
 
-test('isSupportedLeague returns true for supported and false for unknown', () => {
+test('isSupportedLeague returns true for both supported and false for unknown', () => {
     assert.equal(isSupportedLeague('laliga'), true);
-    assert.equal(isSupportedLeague('champions'), false);
+    assert.equal(isSupportedLeague('champions'), true);
+    assert.equal(isSupportedLeague('premier'), false);
     assert.equal(isSupportedLeague(''), false);
     assert.equal(isSupportedLeague(undefined), false);
 });

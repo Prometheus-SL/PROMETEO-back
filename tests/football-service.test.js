@@ -11,6 +11,13 @@ function loadFixture(name) {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
+const teamsBody = {
+    teams: [
+        { id: 81, name: 'FC Barcelona', shortName: 'Barça', tla: 'FCB', crest: 'https://crests.football-data.org/81.svg' },
+        { id: 86, name: 'Real Madrid CF', shortName: 'Real Madrid', tla: 'RMA', crest: 'https://crests.football-data.org/86.png' },
+    ],
+};
+
 function createMockFetch(responses) {
     const calls = [];
     const fetchImpl = async (url, init) => {
@@ -120,20 +127,44 @@ test('callFootballData throws FOOTBALL_NOT_CONFIGURED when API key missing', asy
     process.env.FOOTBALL_DATA_API_KEY = 'test-token';
 });
 
-test('listLeagueTeams returns teams derived from standings', async () => {
+test('listLeagueTeams returns normalized teams from the competition teams endpoint', async () => {
     const { createFootballService } = require('../src/services/footballService');
-    const { fetchImpl } = createMockFetch([{ body: loadFixture('standings') }]);
+    const { fetchImpl, calls } = createMockFetch([{ body: teamsBody }]);
     const service = createFootballService({ fetch: fetchImpl });
+
     const teams = await service.listLeagueTeams('laliga');
     assert.equal(teams.length, 2);
     assert.deepEqual(teams[0], {
         id: 81, name: 'FC Barcelona', shortName: 'Barça', code: 'FCB', crest: 'https://crests.football-data.org/81.svg',
     });
+    assert.match(calls[0].url, /\/competitions\/PD\/teams/);
+});
+
+test('listLeagueTeams caches results across calls', async () => {
+    const { createFootballService } = require('../src/services/footballService');
+    const { fetchImpl, calls } = createMockFetch([
+        { body: { teams: [] } },
+        { body: { teams: [] } },
+    ]);
+    const service = createFootballService({ fetch: fetchImpl });
+    await service.listLeagueTeams('laliga');
+    await service.listLeagueTeams('laliga');
+    assert.equal(calls.length, 1);
+});
+
+test('getStandings returns empty rows for a league that does not support standings (champions)', async () => {
+    const { createFootballService } = require('../src/services/footballService');
+    const { fetchImpl, calls } = createMockFetch([]); // no upstream call expected
+    const service = createFootballService({ fetch: fetchImpl });
+
+    const standings = await service.getStandings('champions');
+    assert.deepEqual(standings, { leagueId: 'champions', rows: [] });
+    assert.equal(calls.length, 0);
 });
 
 test('searchTeams filters case-insensitively', async () => {
     const { createFootballService } = require('../src/services/footballService');
-    const { fetchImpl } = createMockFetch([{ body: loadFixture('standings') }]);
+    const { fetchImpl } = createMockFetch([{ body: teamsBody }]);
     const service = createFootballService({ fetch: fetchImpl });
     const result = await service.searchTeams('laliga', 'real');
     const names = result.map((t) => t.name);
@@ -142,7 +173,7 @@ test('searchTeams filters case-insensitively', async () => {
 
 test('searchTeams returns the full list for empty query', async () => {
     const { createFootballService } = require('../src/services/footballService');
-    const { fetchImpl } = createMockFetch([{ body: loadFixture('standings') }]);
+    const { fetchImpl } = createMockFetch([{ body: teamsBody }]);
     const service = createFootballService({ fetch: fetchImpl });
     const result = await service.searchTeams('laliga', '');
     assert.equal(result.length, 2);
@@ -213,7 +244,7 @@ test('getTeamSnapshot reuses the cached competition matches window', async () =>
 test('getTeamSnapshotByName resolves a team by name', async () => {
     const { createFootballService } = require('../src/services/footballService');
     const { fetchImpl } = createMockFetch([
-        { body: loadFixture('standings') },
+        { body: teamsBody },
         { body: loadFixture('competition-matches') },
     ]);
     const service = createFootballService({ fetch: fetchImpl, now: () => NOW_2026_04_28_MS });
@@ -225,7 +256,7 @@ test('getTeamSnapshotByName resolves a team by name', async () => {
 test('getTeamSnapshotByName matches case-insensitively', async () => {
     const { createFootballService } = require('../src/services/footballService');
     const { fetchImpl } = createMockFetch([
-        { body: loadFixture('standings') },
+        { body: teamsBody },
         { body: loadFixture('competition-matches') },
     ]);
     const service = createFootballService({ fetch: fetchImpl, now: () => NOW_2026_04_28_MS });
@@ -235,7 +266,7 @@ test('getTeamSnapshotByName matches case-insensitively', async () => {
 
 test('getTeamSnapshotByName throws FOOTBALL_TEAM_NOT_FOUND', async () => {
     const { createFootballService } = require('../src/services/footballService');
-    const { fetchImpl } = createMockFetch([{ body: loadFixture('standings') }]);
+    const { fetchImpl } = createMockFetch([{ body: teamsBody }]);
     const service = createFootballService({ fetch: fetchImpl });
     await assert.rejects(
         () => service.getTeamSnapshotByName('laliga', 'Manchester City'),

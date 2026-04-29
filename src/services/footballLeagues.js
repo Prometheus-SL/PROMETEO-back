@@ -8,6 +8,7 @@ const LEAGUES = Object.freeze({
         id: 'laliga',
         label: 'LaLiga',
         country: 'Spain',
+        supportsStandings: true,
         footballData: Object.freeze({
             code: 'PD',
         }),
@@ -15,6 +16,20 @@ const LEAGUES = Object.freeze({
             youtubeChannelId: 'UCTv-XvfzLX3i4IGWAm4sbmA',
             channelUrl: 'https://www.youtube.com/@LaLiga',
             channelLabel: 'LaLiga on YouTube',
+        }),
+    }),
+    champions: Object.freeze({
+        id: 'champions',
+        label: 'UEFA Champions League',
+        country: 'Europe',
+        supportsStandings: false,
+        footballData: Object.freeze({
+            code: 'CL',
+        }),
+        highlights: Object.freeze({
+            youtubeChannelId: 'UCxLn7BTDBTeg-l5y4HeMVqw',
+            channelUrl: 'https://www.youtube.com/@uefa',
+            channelLabel: 'UEFA on YouTube',
         }),
     }),
 });
