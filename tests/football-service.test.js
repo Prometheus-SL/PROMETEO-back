@@ -379,3 +379,59 @@ test('getFeaturedMatch populates highlights when YouTube key is set', async () =
     assert.deepEqual(featured.highlights, { videoId: 'feat999' });
     process.env.YOUTUBE_API_KEY = '';
 });
+
+const teamsWithAtleti = {
+    teams: [
+        { id: 81, name: 'FC Barcelona', shortName: 'Barça', tla: 'FCB', crest: '' },
+        { id: 86, name: 'Real Madrid CF', shortName: 'Real Madrid', tla: 'RMA', crest: '' },
+        { id: 78, name: 'Club Atlético de Madrid', shortName: 'Atlético', tla: 'ATL', crest: '' },
+        { id: 90, name: 'Real Betis Balompié', shortName: 'Real Betis', tla: 'BET', crest: '' },
+    ],
+};
+
+test('searchTeams matches across accents (atletico finds Atlético)', async () => {
+    const { createFootballService } = require('../src/services/footballService');
+    const { fetchImpl } = createMockFetch([{ body: teamsWithAtleti }]);
+    const service = createFootballService({ fetch: fetchImpl });
+    const result = await service.searchTeams('laliga', 'atletico');
+    const names = result.map((t) => t.name);
+    assert.deepEqual(names, ['Club Atlético de Madrid']);
+});
+
+test('searchTeams matches across casing and partial accents (Atléti)', async () => {
+    const { createFootballService } = require('../src/services/footballService');
+    const { fetchImpl } = createMockFetch([{ body: teamsWithAtleti }]);
+    const service = createFootballService({ fetch: fetchImpl });
+    const result = await service.searchTeams('laliga', 'AtlÉti');
+    const names = result.map((t) => t.name);
+    assert.deepEqual(names, ['Club Atlético de Madrid']);
+});
+
+test('searchTeams expands the "atleti" nickname to Atlético de Madrid', async () => {
+    const { createFootballService } = require('../src/services/footballService');
+    const { fetchImpl } = createMockFetch([{ body: teamsWithAtleti }]);
+    const service = createFootballService({ fetch: fetchImpl });
+    const result = await service.searchTeams('laliga', 'Atleti');
+    const names = result.map((t) => t.name);
+    assert.deepEqual(names, ['Club Atlético de Madrid']);
+});
+
+test('searchTeams expands "barca" to Barcelona', async () => {
+    const { createFootballService } = require('../src/services/footballService');
+    const { fetchImpl } = createMockFetch([{ body: teamsWithAtleti }]);
+    const service = createFootballService({ fetch: fetchImpl });
+    const result = await service.searchTeams('laliga', 'Barca');
+    const names = result.map((t) => t.name);
+    assert.deepEqual(names, ['FC Barcelona']);
+});
+
+test('getTeamSnapshotByName resolves "Atleti" to Club Atlético de Madrid', async () => {
+    const { createFootballService } = require('../src/services/footballService');
+    const { fetchImpl } = createMockFetch([
+        { body: teamsWithAtleti },
+        { body: loadFixture('competition-matches') },
+    ]);
+    const service = createFootballService({ fetch: fetchImpl, now: () => NOW_2026_04_28_MS });
+    const snapshot = await service.getTeamSnapshotByName('laliga', 'Atleti');
+    assert.equal(snapshot.team.id, 78);
+});

@@ -13,6 +13,58 @@ const TTL = Object.freeze({
     LEAGUE_TEAMS: 24 * 60 * 60 * 1000, // 24h — team list rarely changes.
 });
 
+// Normalize text for fuzzy matching: trim, lowercase, strip diacritics.
+// "Atléti" / "Atletí" / "atleti" all collapse to "atleti", and the official
+// "Club Atlético de Madrid" becomes "club atletico de madrid" — so a substring
+// search for "atleti" now matches the team without needing exact casing or
+// accents.
+function normalizeText(value) {
+    return String(value || '')
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .trim()
+        .toLowerCase();
+}
+
+// Curated nicknames → canonical team-name fragments, normalized via the same
+// rules. If a query exactly matches a key here, we expand it to the value
+// before doing the substring search. Keep this list focused on the popular
+// teams Spanish-speaking users actually type into the widget; we add more as
+// users report misses. The substring engine on top of `normalizeText` already
+// handles most accents/casing without needing entries here.
+const TEAM_NICKNAMES = Object.freeze({
+    // LaLiga
+    'atleti': 'atletico de madrid',
+    'colchoneros': 'atletico de madrid',
+    'rojiblancos': 'atletico de madrid',
+    'merengues': 'real madrid',
+    'blancos': 'real madrid',
+    'madridistas': 'real madrid',
+    'culer': 'barcelona',
+    'culers': 'barcelona',
+    'culés': 'barcelona',
+    'cules': 'barcelona',
+    'barca': 'barcelona',
+    'verdiblancos': 'real betis',
+    'beticos': 'real betis',
+    'rojillos': 'osasuna',
+    'leones': 'athletic',
+    'txuriurdin': 'real sociedad',
+    'che': 'valencia',
+    // Champions / international shortcuts
+    'bayern': 'bayern munchen',
+    'psg': 'paris',
+    'united': 'manchester united',
+    'city': 'manchester city',
+    'inter': 'inter',
+    'milan': 'milan',
+});
+
+function expandNickname(query) {
+    const normalized = normalizeText(query);
+    return TEAM_NICKNAMES[normalized] ?? normalized;
+}
+
 function buildYouTubeQuery(home, away, matchday, leagueLabel) {
     const safe = (s) => String(s || '').trim();
     const parts = [
@@ -301,13 +353,13 @@ function createFootballService({ fetch = globalThis.fetch, now = () => Date.now(
 
     async function searchTeams(leagueId, query) {
         const teams = await listLeagueTeams(leagueId);
-        const q = String(query || '').trim().toLowerCase();
+        const q = expandNickname(query);
         if (!q) return teams;
         return teams.filter((team) => {
             return (
-                team.name.toLowerCase().includes(q) ||
-                team.shortName.toLowerCase().includes(q) ||
-                team.code.toLowerCase().includes(q)
+                normalizeText(team.name).includes(q) ||
+                normalizeText(team.shortName).includes(q) ||
+                normalizeText(team.code).includes(q)
             );
         });
     }
@@ -372,9 +424,9 @@ function createFootballService({ fetch = globalThis.fetch, now = () => Date.now(
                 `No team in ${league.label} matches "${trimmed}".`,
             );
         }
-        const lower = trimmed.toLowerCase();
+        const lower = expandNickname(trimmed);
         const exact = matches.find(
-            (t) => t.name.toLowerCase() === lower || t.shortName.toLowerCase() === lower,
+            (t) => normalizeText(t.name) === lower || normalizeText(t.shortName) === lower,
         );
         const team = exact ?? matches[0];
 
