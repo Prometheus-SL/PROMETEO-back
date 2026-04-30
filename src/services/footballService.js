@@ -156,8 +156,14 @@ function parseForm(raw) {
         .slice(-5);
 }
 
-function createFootballService({ fetch = globalThis.fetch, now = () => Date.now() } = {}) {
+function createFootballService({
+    fetch = globalThis.fetch,
+    now = () => Date.now(),
+    liveScoreScraper,
+} = {}) {
     const cache = createCache({ now });
+    const scraper = liveScoreScraper
+        ?? require('./liveScoreScraper').createLiveScoreScraper({ fetch, now, cache });
 
     async function safeReadJson(response) {
         try { return await response.json(); } catch { return null; }
@@ -333,8 +339,10 @@ function createFootballService({ fetch = globalThis.fetch, now = () => Date.now(
         const key = `matches-window:${leagueId}`;
         return cache.fetch(key, TTL.MATCHES_WINDOW, async () => {
             const nowMs = now();
-            const dateFrom = isoDate(nowMs - 7 * 24 * 60 * 60 * 1000);
-            const dateTo = isoDate(nowMs + 14 * 24 * 60 * 60 * 1000);
+            // Wide enough window to cover international breaks, mid-season
+            // gaps, and Champions teams between their league-phase fixtures.
+            const dateFrom = isoDate(nowMs - 14 * 24 * 60 * 60 * 1000);
+            const dateTo = isoDate(nowMs + 30 * 24 * 60 * 60 * 1000);
             const payload = await callFootballData(
                 `/competitions/${league.footballData.code}/matches`,
                 { dateFrom, dateTo },
@@ -394,14 +402,35 @@ function createFootballService({ fetch = globalThis.fetch, now = () => Date.now(
         const state = chooseState({ liveMatch, nextMatch }, now());
 
         const reference = liveMatch ?? lastMatch ?? nextMatch;
-        const team =
+        let team =
             reference?.home?.team?.id === id ? reference.home.team
                 : reference?.away?.team?.id === id ? reference.away.team
-                : { id, name: '', shortName: '', code: '', crest: '' };
+                : null;
+
+        // When the team has no matches in the window we still want a usable
+        // team object (name, crest) for the empty state. Look it up in the
+        // league's team catalog (already cached for 24h, so this is cheap).
+        if (!team) {
+            try {
+                const teams = await listLeagueTeams(leagueId);
+                team = teams.find((t) => t.id === id)
+                    ?? { id, name: '', shortName: '', code: '', crest: '' };
+            } catch {
+                team = { id, name: '', shortName: '', code: '', crest: '' };
+            }
+        }
 
         const highlightSource = lastMatch ?? liveMatch ?? null;
         const highlights = highlightSource
             ? await findMatchHighlight(highlightSource, league.label)
+            : null;
+
+        // Enrich the live match score from the FotMob scraper. football-data.org's
+        // free-tier feed lags 30s-2min on goal updates; FotMob's public JSON API
+        // is closer to real-time. If the scraper fails for any reason we keep
+        // the original football-data.org snapshot — the widget never breaks.
+        const enrichedLiveMatch = liveMatch
+            ? await tryEnrichLiveMatch(liveMatch)
             : null;
 
         return {
@@ -409,9 +438,35 @@ function createFootballService({ fetch = globalThis.fetch, now = () => Date.now(
             team,
             lastMatch,
             nextMatch,
-            liveMatch,
+            liveMatch: enrichedLiveMatch,
             highlights: highlights ?? null,
         };
+    }
+
+    async function tryEnrichLiveMatch(match) {
+        try {
+            const live = await scraper.findLiveScoreByTeams({
+                homeTeamName: match.home.team.name,
+                awayTeamName: match.away.team.name,
+                dateUtcMs: (match.startTimestamp || 0) * 1000,
+            });
+            if (!live) return match;
+            return {
+                ...match,
+                home: {
+                    ...match.home,
+                    score: live.homeScore !== null ? live.homeScore : match.home.score,
+                },
+                away: {
+                    ...match.away,
+                    score: live.awayScore !== null ? live.awayScore : match.away.score,
+                },
+                statusDescription: live.statusText || match.statusDescription,
+            };
+        } catch (err) {
+            console.warn(`[footballService] live-score enrichment failed: ${err.message}`);
+            return match;
+        }
     }
 
     async function getTeamSnapshotByName(leagueId, name) {

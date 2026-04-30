@@ -435,3 +435,117 @@ test('getTeamSnapshotByName resolves "Atleti" to Club Atlético de Madrid', asyn
     const snapshot = await service.getTeamSnapshotByName('laliga', 'Atleti');
     assert.equal(snapshot.team.id, 78);
 });
+
+test('getTeamSnapshot enriches live match score from the live-score scraper', async () => {
+    const { createFootballService } = require('../src/services/footballService');
+    const liveMatchesFixture = {
+        matches: [
+            {
+                id: 489051,
+                competition: { id: 2014, name: 'LaLiga', code: 'PD' },
+                matchday: 32,
+                utcDate: '2026-04-30T19:00:00Z',
+                status: 'IN_PLAY',
+                homeTeam: { id: 86, name: 'Real Madrid CF', shortName: 'Real Madrid', tla: 'RMA', crest: '' },
+                awayTeam: { id: 81, name: 'FC Barcelona', shortName: 'Barça', tla: 'FCB', crest: '' },
+                score: { winner: null, fullTime: { home: 0, away: 0 }, halfTime: { home: 0, away: 0 } },
+            },
+        ],
+    };
+    const { fetchImpl } = createMockFetch([{ body: liveMatchesFixture }]);
+    const fakeScraper = {
+        findLiveScoreByTeams: async () => ({ homeScore: 3, awayScore: 1, statusText: "82'" }),
+    };
+    const service = createFootballService({
+        fetch: fetchImpl,
+        now: () => new Date('2026-04-30T20:00:00Z').getTime(),
+        liveScoreScraper: fakeScraper,
+    });
+
+    const snapshot = await service.getTeamSnapshot('laliga', 86);
+    assert.equal(snapshot.state, 'live');
+    assert.equal(snapshot.liveMatch.home.score, 3);
+    assert.equal(snapshot.liveMatch.away.score, 1);
+    assert.equal(snapshot.liveMatch.statusDescription, "82'");
+});
+
+test('getTeamSnapshot keeps original score when scraper returns null', async () => {
+    const { createFootballService } = require('../src/services/footballService');
+    const liveMatchesFixture = {
+        matches: [
+            {
+                id: 489051,
+                competition: { id: 2014, name: 'LaLiga', code: 'PD' },
+                matchday: 32,
+                utcDate: '2026-04-30T19:00:00Z',
+                status: 'IN_PLAY',
+                homeTeam: { id: 86, name: 'Real Madrid CF', shortName: 'Real Madrid', tla: 'RMA', crest: '' },
+                awayTeam: { id: 81, name: 'FC Barcelona', shortName: 'Barça', tla: 'FCB', crest: '' },
+                score: { winner: null, fullTime: { home: 1, away: 1 }, halfTime: { home: 0, away: 1 } },
+            },
+        ],
+    };
+    const { fetchImpl } = createMockFetch([{ body: liveMatchesFixture }]);
+    const fakeScraper = { findLiveScoreByTeams: async () => null };
+    const service = createFootballService({
+        fetch: fetchImpl,
+        now: () => new Date('2026-04-30T20:00:00Z').getTime(),
+        liveScoreScraper: fakeScraper,
+    });
+
+    const snapshot = await service.getTeamSnapshot('laliga', 86);
+    assert.equal(snapshot.liveMatch.home.score, 1);
+    assert.equal(snapshot.liveMatch.away.score, 1);
+});
+
+test('getTeamSnapshot does NOT call the scraper when there is no live match', async () => {
+    const { createFootballService } = require('../src/services/footballService');
+    const { fetchImpl } = createMockFetch([{ body: loadFixture('competition-matches') }]);
+
+    let scraperCalls = 0;
+    const fakeScraper = {
+        findLiveScoreByTeams: async () => {
+            scraperCalls += 1;
+            return null;
+        },
+    };
+    const service = createFootballService({
+        fetch: fetchImpl,
+        now: () => NOW_2026_04_28_MS,
+        liveScoreScraper: fakeScraper,
+    });
+
+    await service.getTeamSnapshot('laliga', 86);
+    assert.equal(scraperCalls, 0);
+});
+
+test('getTeamSnapshot survives scraper exceptions', async () => {
+    const { createFootballService } = require('../src/services/footballService');
+    const liveMatchesFixture = {
+        matches: [
+            {
+                id: 489051,
+                competition: { id: 2014, name: 'LaLiga', code: 'PD' },
+                matchday: 32,
+                utcDate: '2026-04-30T19:00:00Z',
+                status: 'IN_PLAY',
+                homeTeam: { id: 86, name: 'Real Madrid CF', shortName: 'Real Madrid', tla: 'RMA', crest: '' },
+                awayTeam: { id: 81, name: 'FC Barcelona', shortName: 'Barça', tla: 'FCB', crest: '' },
+                score: { winner: null, fullTime: { home: 2, away: 0 }, halfTime: { home: 1, away: 0 } },
+            },
+        ],
+    };
+    const { fetchImpl } = createMockFetch([{ body: liveMatchesFixture }]);
+    const fakeScraper = {
+        findLiveScoreByTeams: async () => { throw new Error('boom'); },
+    };
+    const service = createFootballService({
+        fetch: fetchImpl,
+        now: () => new Date('2026-04-30T20:00:00Z').getTime(),
+        liveScoreScraper: fakeScraper,
+    });
+
+    const snapshot = await service.getTeamSnapshot('laliga', 86);
+    assert.equal(snapshot.liveMatch.home.score, 2);
+    assert.equal(snapshot.liveMatch.away.score, 0);
+});
