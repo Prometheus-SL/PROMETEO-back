@@ -6,11 +6,12 @@ const FOOTBALL_DATA_BASE_URL = 'https://api.football-data.org/v4';
 const YOUTUBE_API_BASE_URL = 'https://www.googleapis.com/youtube/v3';
 
 // TTLs aligned with the 10 req/min free tier of football-data.org.
-// MATCHES_WINDOW is intentionally short (30s) so live scores propagate quickly
-// during in-progress matches — the frontend polls at 30s during 'live' state,
-// so the cache refresh aligns with each poll rather than holding 60s-old data.
-// At 30s TTL we hit upstream at most 120 times/hour per league = 2/min,
-// well under the 10/min free-tier rate limit even with several leagues active.
+// MATCHES_WINDOW (30s) is the football-data.org cache. Live scores DON'T rely
+// on this — `tryEnrichLiveMatch` re-queries the FotMob scraper on every
+// snapshot request, and that scraper has its own much shorter cache (~5s).
+// So MATCHES_WINDOW only governs how stale the FIXTURE list (kickoff times,
+// matchday, etc.) can get, which is fine at 30s. Keeping this at 30s is what
+// lets us stay under the 10 req/min free-tier limit with several leagues.
 const TTL = Object.freeze({
     STANDINGS: 5 * 60 * 1000,        // 5 min
     MATCHES_WINDOW: 30 * 1000,       // 30s — match the frontend's live polling.
@@ -160,10 +161,13 @@ function createFootballService({
     fetch = globalThis.fetch,
     now = () => Date.now(),
     liveScoreScraper,
+    sofaScoreScraper,
 } = {}) {
     const cache = createCache({ now });
     const scraper = liveScoreScraper
         ?? require('./liveScoreScraper').createLiveScoreScraper({ fetch, now, cache });
+    const sofa = sofaScoreScraper
+        ?? require('./sofaScoreScraper').createSofaScoreScraper({ fetch, now, cache });
 
     async function safeReadJson(response) {
         try { return await response.json(); } catch { return null; }
@@ -389,7 +393,7 @@ function createFootballService({
             (m) => m.home.team.id === id || m.away.team.id === id,
         );
 
-        const liveMatch = teamMatches.find((m) => m.status === 'inprogress') ?? null;
+        const rawLiveMatch = teamMatches.find((m) => m.status === 'inprogress') ?? null;
         const finished = teamMatches
             .filter((m) => m.status === 'finished')
             .sort((a, b) => b.startTimestamp - a.startTimestamp);
@@ -397,7 +401,22 @@ function createFootballService({
             .filter((m) => m.status === 'notstarted')
             .sort((a, b) => a.startTimestamp - b.startTimestamp);
 
-        const lastMatch = finished[0] ?? null;
+        // Enrich the live match BEFORE deciding the snapshot's state. FotMob /
+        // SofaScore detect FT well before football-data.org's free tier flips
+        // IN_PLAY → FINISHED (lag of several minutes), so we trust them to mark
+        // the match as actually finished. If they say it's done we promote it
+        // to lastMatch and clear the live slot so the widget transitions out
+        // of the 'live' state immediately.
+        const enrichedLiveMatch = rawLiveMatch
+            ? await tryEnrichLiveMatch(rawLiveMatch)
+            : null;
+        const liveSourceSaysFinished =
+            enrichedLiveMatch != null && enrichedLiveMatch.status !== 'inprogress';
+
+        const liveMatch = liveSourceSaysFinished ? null : enrichedLiveMatch;
+        const lastMatch = liveSourceSaysFinished
+            ? enrichedLiveMatch
+            : finished[0] ?? null;
         const nextMatch = upcoming[0] ?? null;
         const state = chooseState({ liveMatch, nextMatch }, now());
 
@@ -425,48 +444,83 @@ function createFootballService({
             ? await findMatchHighlight(highlightSource, league.label)
             : null;
 
-        // Enrich the live match score from the FotMob scraper. football-data.org's
-        // free-tier feed lags 30s-2min on goal updates; FotMob's public JSON API
-        // is closer to real-time. If the scraper fails for any reason we keep
-        // the original football-data.org snapshot — the widget never breaks.
-        const enrichedLiveMatch = liveMatch
-            ? await tryEnrichLiveMatch(liveMatch)
-            : null;
-
         return {
             state,
             team,
             lastMatch,
             nextMatch,
-            liveMatch: enrichedLiveMatch,
+            liveMatch,
             highlights: highlights ?? null,
         };
     }
 
+    // A "useful" status text is one that contains at least one digit — i.e.
+    // it tells us the actual game minute. "In progress" or "LIVE" alone are
+    // not useful and trigger the SofaScore fallback.
+    function hasUsefulMinute(text) {
+        return typeof text === 'string' && /\d/.test(text);
+    }
+
     async function tryEnrichLiveMatch(match) {
+        let live = null;
+
         try {
-            const live = await scraper.findLiveScoreByTeams({
+            live = await scraper.findLiveScoreByTeams({
                 homeTeamName: match.home.team.name,
                 awayTeamName: match.away.team.name,
                 dateUtcMs: (match.startTimestamp || 0) * 1000,
             });
-            if (!live) return match;
-            return {
-                ...match,
-                home: {
-                    ...match.home,
-                    score: live.homeScore !== null ? live.homeScore : match.home.score,
-                },
-                away: {
-                    ...match.away,
-                    score: live.awayScore !== null ? live.awayScore : match.away.score,
-                },
-                statusDescription: live.statusText || match.statusDescription,
-            };
         } catch (err) {
-            console.warn(`[footballService] live-score enrichment failed: ${err.message}`);
-            return match;
+            console.warn(`[footballService] FotMob enrichment failed: ${err.message}`);
         }
+
+        // Fall back to SofaScore when FotMob couldn't give us a parseable
+        // minute. SofaScore exposes `currentPeriodStartTimestamp`, so we
+        // get an exact game minute (with halftime / stoppage handled).
+        if (!live || !hasUsefulMinute(live.statusText)) {
+            try {
+                const sofa = await sofa_findLiveScore(match);
+                if (sofa) {
+                    live = {
+                        homeScore: sofa.homeScore ?? live?.homeScore ?? null,
+                        awayScore: sofa.awayScore ?? live?.awayScore ?? null,
+                        statusText: sofa.statusText || live?.statusText || '',
+                    };
+                }
+            } catch (err) {
+                console.warn(`[footballService] SofaScore enrichment failed: ${err.message}`);
+            }
+        }
+
+        if (!live) return match;
+
+        // FT / AET / Pen / "Full Time" / "Ended" → the live source confirms
+        // the match is over. We flip the status here so getTeamSnapshot can
+        // promote it to lastMatch and chooseState transitions out of 'live'
+        // without waiting for football-data.org to catch up.
+        const liveText = String(live.statusText || '').trim();
+        const looksFinished = /^(ft|aet|pen|finished|full[- ]?time|ended)$/i.test(liveText);
+
+        return {
+            ...match,
+            status: looksFinished ? 'finished' : match.status,
+            statusDescription: liveText || match.statusDescription,
+            home: {
+                ...match.home,
+                score: live.homeScore !== null ? live.homeScore : match.home.score,
+            },
+            away: {
+                ...match.away,
+                score: live.awayScore !== null ? live.awayScore : match.away.score,
+            },
+        };
+    }
+
+    async function sofa_findLiveScore(match) {
+        return sofa.findLiveScoreByTeams({
+            homeTeamName: match.home.team.name,
+            awayTeamName: match.away.team.name,
+        });
     }
 
     async function getTeamSnapshotByName(leagueId, name) {

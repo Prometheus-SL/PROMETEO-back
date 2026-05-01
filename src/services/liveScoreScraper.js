@@ -8,7 +8,11 @@ const FOTMOB_HEADERS = {
     'Origin': 'https://www.fotmob.com',
 };
 
-const TTL_LIVE_SCORE = 10 * 1000; // 10s during in-progress matches.
+// Short TTL so live scores feel near real-time. The frontend polls every 10s
+// during in-progress matches; a 5s cache means we always serve a fresh-enough
+// FotMob payload (at most 1 upstream request per ~5s per match), and goals
+// show up in the widget within ~10–15s of happening.
+const TTL_LIVE_SCORE = 5 * 1000;
 
 const NOISE_TOKENS = new Set([
     'fc', 'cf', 'club', 'de', 'la', 'real', 'cd', 'sd', 'ud', 'rcd', 'sc',
