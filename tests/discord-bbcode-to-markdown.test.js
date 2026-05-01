@@ -66,3 +66,10 @@ test('bbcodeToMarkdown drops [img] tags', () => {
 
     assert.equal(out, 'Before\n\nAfter');
 });
+
+test('bbcodeToMarkdown strips [p] tags with named attributes (e.g. align="start")', () => {
+    const input = '[p align="start"]A server patch is scheduled.[/p][p align="start"]Patch Schedule[/p]';
+    const out = bbcodeToMarkdown(input);
+
+    assert.equal(out, 'A server patch is scheduled.\n\nPatch Schedule');
+});

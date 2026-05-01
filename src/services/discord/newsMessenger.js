@@ -52,7 +52,7 @@ function bbcodeToMarkdown(text) {
     out = out.replace(/\[p\]/gi, '');
     out = out.replace(/\[\/p\]/gi, '\n\n');
 
-    out = out.replace(/\[\/?[a-z][a-z0-9]*(=[^\]]*)?\]/gi, '');
+    out = out.replace(/\[\/?[a-z][a-z0-9]*(?:=[^\]]*|\s+[^\]]*=[^\]]*)?\]/gi, '');
 
     out = out.replace(/[ \t]+\n/g, '\n');
     out = out.replace(/\n[ \t]+/g, '\n');
