@@ -68,7 +68,12 @@ function createLiveScoreScraper({
     const localCache = cache ?? require('./footballCache').createCache({ now });
 
     async function fetchMatchesForDate(dateKey) {
-        const url = `${FOTMOB_BASE}/matches?date=${dateKey}`;
+        // FotMob moved this endpoint from /api/matches to /api/data/matches and
+        // now requires a `timezone` query param (without it, the new path 502s).
+        // The legacy path returns a 404 HTML page, which silently broke live
+        // score enrichment — the snapshot kept serving the football-data.org
+        // free-tier score, which lags real time by minutes during a match.
+        const url = `${FOTMOB_BASE}/data/matches?date=${dateKey}&timezone=UTC`;
         let response;
         try {
             response = await fetch(url, { headers: FOTMOB_HEADERS });

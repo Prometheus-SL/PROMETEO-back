@@ -57,6 +57,19 @@ test('findLiveScoreByTeams resolves a match by exact team names', async () => {
     assert.deepEqual(result, { homeScore: 2, awayScore: 1, statusText: "67'" });
 });
 
+test('findLiveScoreByTeams hits FotMob /api/data/matches with timezone (regression: legacy /api/matches 404s)', async () => {
+    const { fetchImpl, calls } = createMockFetch([{ body: sampleFotMobResponse }]);
+    const scraper = createLiveScoreScraper({ fetch: fetchImpl });
+
+    await scraper.findLiveScoreByTeams({
+        homeTeamName: 'Real Madrid',
+        awayTeamName: 'Barcelona',
+        dateUtcMs: MATCH_DAY_MS,
+    });
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/api\/data\/matches\?date=20260430&timezone=UTC$/);
+});
+
 test('findLiveScoreByTeams matches across name variants ("Atlético Madrid" vs "Club Atlético de Madrid")', async () => {
     const { fetchImpl } = createMockFetch([{ body: sampleFotMobResponse }]);
     const scraper = createLiveScoreScraper({ fetch: fetchImpl });

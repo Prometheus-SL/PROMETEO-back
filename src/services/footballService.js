@@ -454,11 +454,16 @@ function createFootballService({
         };
     }
 
-    // A "useful" status text is one that contains at least one digit — i.e.
-    // it tells us the actual game minute. "In progress" or "LIVE" alone are
-    // not useful and trigger the SofaScore fallback.
-    function hasUsefulMinute(text) {
-        return typeof text === 'string' && /\d/.test(text);
+    // A "useful" status text either gives us a numeric minute (`67'`, `45+2'`)
+    // or a recognised terminal/break label (`HT`, `FT`, `AET`, `Pen`). Only
+    // truly opaque values like `In progress` or bare `LIVE` should trigger the
+    // SofaScore fallback — otherwise we waste a request per snapshot during
+    // halftime/fulltime windows on an endpoint that's currently 403'd by
+    // Cloudflare anyway.
+    function hasUsefulStatus(text) {
+        if (typeof text !== 'string') return false;
+        if (/\d/.test(text)) return true;
+        return /^(ht|ft|aet|pen|half[- ]?time|full[- ]?time|finished|ended)$/i.test(text.trim());
     }
 
     async function tryEnrichLiveMatch(match) {
@@ -477,7 +482,7 @@ function createFootballService({
         // Fall back to SofaScore when FotMob couldn't give us a parseable
         // minute. SofaScore exposes `currentPeriodStartTimestamp`, so we
         // get an exact game minute (with halftime / stoppage handled).
-        if (!live || !hasUsefulMinute(live.statusText)) {
+        if (!live || !hasUsefulStatus(live.statusText)) {
             try {
                 const sofa = await sofa_findLiveScore(match);
                 if (sofa) {
