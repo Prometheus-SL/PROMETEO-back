@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
+    "migrate:dashboard-module-ai": "node scripts/backfill-dashboard-module-ai.js",
     "setup:admin": "node scripts/create-admin.js",
     "setup:agent": "node scripts/create-agent.js",
     "setup:all": "npm run setup:admin && npm run setup:agent",

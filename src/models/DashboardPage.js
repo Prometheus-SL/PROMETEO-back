@@ -32,6 +32,12 @@ const ModuleMetaSchema = new mongoose.Schema({
     capabilities: {
         type: [String],
         default: []
+    },
+    ai: {
+        actions: {
+            type: [String],
+            default: []
+        }
     }
 }, { _id: false });
 
