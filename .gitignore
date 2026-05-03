@@ -142,3 +142,4 @@ vite.config.ts.timestamp-*
 
 # User-uploaded assets
 uploads/
+.worktrees/
