@@ -502,8 +502,11 @@ module.exports = {
     fetchConversations,
     fetchMessages,
     async sendMessage(userRef, chatId, text) {
-        const client = await ensureClient(userRef);
+        const client = await requireReadyClient(userRef);
         const msg = await client.sendMessage(chatId, text);
-        return { id: serializeMessageId(msg.id), timestamp: msg.timestamp };
+        return {
+            id: normalizeMessageId(msg.id),
+            timestamp: normalizeTimestamp(msg.timestamp),
+        };
     },
 };

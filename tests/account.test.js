@@ -44,6 +44,11 @@ function createMutationRouteApp({ user, modelUser = user, findOne = async () => 
                 completeGithubLink: async () => null,
                 disconnectGithubAccount: async () => null,
             },
+            'src/services/steamIntegration.js': {
+                buildSteamAuthorizeUrl: () => '',
+                completeSteamLink: async () => null,
+                disconnectSteamAccount: async () => null,
+            },
             'src/services/creatorIntegration.js': {
                 getCreatorStatus: async () => ({
                     status: 'disconnected',
@@ -108,6 +113,11 @@ test('GET /api/v1/account returns the normalized account payload', async (t) => 
                 buildDiscordAuthorizeUrl: () => '',
                 completeDiscordLink: async () => null,
                 disconnectDiscordAccount: async () => null,
+            },
+            'src/services/steamIntegration.js': {
+                buildSteamAuthorizeUrl: () => '',
+                completeSteamLink: async () => null,
+                disconnectSteamAccount: async () => null,
             },
         },
     });
@@ -222,6 +232,21 @@ test('GET /api/v1/account/providers returns the provider registry with live stat
                     lastError: null,
                 }),
             },
+            'src/services/steamIntegration.js': {
+                buildSteamAuthorizeUrl: () => '',
+                completeSteamLink: async () => null,
+                disconnectSteamAccount: async () => null,
+                getSteamStatus: async () => ({
+                    status: 'connected',
+                    profile: {
+                        steamId: '76561198000000001',
+                        personaName: 'Mike on Steam',
+                    },
+                    connectedAt: '2026-04-14T12:00:00.000Z',
+                    scopes: ['openid', 'friends.read', 'presence.read'],
+                    lastError: null,
+                }),
+            },
             'src/services/creatorIntegration.js': {
                 getCreatorStatus: async () => ({
                     status: 'connected',
@@ -241,14 +266,16 @@ test('GET /api/v1/account/providers returns the provider registry with live stat
 
     assert.equal(response.status, 200);
     assert.equal(response.body.success, true);
-    assert.equal(response.body.data.providers.length, 5);
+    assert.equal(response.body.data.providers.length, 6);
     assert.equal(response.body.data.providers[0].id, 'spotify');
     assert.equal(response.body.data.providers[0].status, 'connected');
     assert.equal(response.body.data.providers[1].id, 'discord');
     assert.equal(response.body.data.providers[2].id, 'google');
     assert.equal(response.body.data.providers[3].id, 'github');
-    assert.equal(response.body.data.providers[4].id, 'creator');
-    assert.equal(response.body.data.providers[4].connectSupported, false);
+    assert.equal(response.body.data.providers[4].id, 'steam');
+    assert.equal(response.body.data.providers[4].status, 'connected');
+    assert.equal(response.body.data.providers[5].id, 'creator');
+    assert.equal(response.body.data.providers[5].connectSupported, false);
 });
 
 test('PATCH /api/v1/account/profile updates editable profile fields', async (t) => {

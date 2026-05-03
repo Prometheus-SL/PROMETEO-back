@@ -321,6 +321,65 @@ const githubLinkedAccountSchema = new mongoose.Schema({
     },
 }, { _id: false });
 
+const steamProfileSchema = new mongoose.Schema({
+    steamId: {
+        type: String,
+        trim: true,
+    },
+    personaName: {
+        type: String,
+        trim: true,
+    },
+    displayName: {
+        type: String,
+        trim: true,
+    },
+    avatarUrl: {
+        type: String,
+        trim: true,
+    },
+    profileUrl: {
+        type: String,
+        trim: true,
+    },
+    visibilityState: {
+        type: Number,
+        default: null,
+    },
+}, { _id: false });
+
+const steamLinkedAccountSchema = new mongoose.Schema({
+    status: {
+        type: String,
+        enum: ['disconnected', 'connected', 'reauth_required'],
+        default: 'disconnected',
+    },
+    profile: {
+        type: steamProfileSchema,
+        default: undefined,
+    },
+    scopes: {
+        type: [String],
+        default: [],
+    },
+    connectedAt: {
+        type: Date,
+        default: null,
+    },
+    tokenExpiresAt: {
+        type: Date,
+        default: null,
+    },
+    lastError: {
+        type: String,
+        default: null,
+    },
+    credentials: {
+        type: encryptedPayloadSchema,
+        default: undefined,
+    },
+}, { _id: false });
+
 const linkedAccountsSchema = new mongoose.Schema({
     spotify: {
         type: spotifyLinkedAccountSchema,
@@ -336,6 +395,10 @@ const linkedAccountsSchema = new mongoose.Schema({
     },
     github: {
         type: githubLinkedAccountSchema,
+        default: () => ({ status: 'disconnected', scopes: [] }),
+    },
+    steam: {
+        type: steamLinkedAccountSchema,
         default: () => ({ status: 'disconnected', scopes: [] }),
     },
 }, { _id: false });
@@ -603,6 +666,19 @@ userSchema.methods.clearLinkedAccount = function (provider) {
         };
     }
 
+    if (provider === 'steam') {
+        this.linkedAccounts = this.linkedAccounts || {};
+        this.linkedAccounts.steam = {
+            status: 'disconnected',
+            profile: undefined,
+            scopes: [],
+            connectedAt: null,
+            tokenExpiresAt: null,
+            lastError: null,
+            credentials: undefined,
+        };
+    }
+
     return this;
 };
 
@@ -622,6 +698,9 @@ userSchema.methods.toJSON = function () {
     }
     if (user.linkedAccounts?.github) {
         delete user.linkedAccounts.github.credentials;
+    }
+    if (user.linkedAccounts?.steam) {
+        delete user.linkedAccounts.steam.credentials;
     }
     delete user.linkedAccounts;
     return user;

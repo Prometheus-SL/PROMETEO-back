@@ -39,6 +39,12 @@ const {
     getGithubStatus,
 } = require('../services/githubIntegration');
 const {
+    buildSteamAuthorizeUrl,
+    completeSteamLink,
+    disconnectSteamAccount,
+    getSteamStatus,
+} = require('../services/steamIntegration');
+const {
     getCreatorStatus,
 } = require('../services/creatorIntegration');
 const { handleOAuthLoginCallback } = require('./oauthLogin');
@@ -131,6 +137,19 @@ const LINKED_ACCOUNT_PROVIDERS = {
         completeLink: completeGithubLink,
         disconnectAccount: disconnectGithubAccount,
         getStatus: getGithubStatus,
+    },
+    steam: {
+        id: 'steam',
+        name: 'Steam',
+        description: 'Friends presence, current games, and Store deals.',
+        kind: 'openid',
+        connectPath: '/api/v1/account/linked-accounts/steam/connect',
+        disconnectPath: '/api/v1/account/linked-accounts/steam',
+        callbackMode: 'openid',
+        buildAuthorizeUrl: buildSteamAuthorizeUrl,
+        completeLink: completeSteamLink,
+        disconnectAccount: disconnectSteamAccount,
+        getStatus: getSteamStatus,
     },
     creator: {
         id: 'creator',
@@ -387,8 +406,9 @@ router.get('/linked-accounts/:provider/callback', async (req, res) => {
             });
         }
 
+        const usesOpenId = definition.callbackMode === 'openid';
         const code = String(req.query.code || '').trim();
-        if (!code) {
+        if (!usesOpenId && !code) {
             throw createHttpError(400, `${providerId.toUpperCase()}_CODE_MISSING`, `${definition.name} did not return an authorization code.`);
         }
         if (typeof definition.completeLink !== 'function') {
@@ -404,7 +424,7 @@ router.get('/linked-accounts/:provider/callback', async (req, res) => {
             throw createHttpError(401, 'LINKED_ACCOUNT_SESSION_INVALID', `The session is no longer active. Sign in again before linking ${definition.name}.`);
         }
 
-        await definition.completeLink(user, code);
+        await definition.completeLink(user, usesOpenId ? req.query : code);
 
         return res.redirect(buildLinkedAccountCallbackUrl({
             origin: callbackOrigin,

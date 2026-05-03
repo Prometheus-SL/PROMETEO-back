@@ -217,6 +217,7 @@ function serializeLinkedAccounts(linkedAccounts) {
         discord: serializeDiscordLinkedAccount(linkedAccounts?.discord),
         google: serializeGenericLinkedAccount(linkedAccounts?.google),
         github: serializeGenericLinkedAccount(linkedAccounts?.github),
+        steam: serializeGenericLinkedAccount(linkedAccounts?.steam),
     };
 }
 
