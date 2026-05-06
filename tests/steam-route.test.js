@@ -8,6 +8,7 @@ function createSteamRouteApp(overrides = {}) {
     const state = {
         friendsCalls: [],
         dealsCalls: [],
+        inventoryCalls: [],
     };
 
     const steamService = {
@@ -52,6 +53,23 @@ function createSteamRouteApp(overrides = {}) {
                         platforms: { windows: true, mac: true, linux: false },
                     },
                 ],
+            };
+        },
+        getSteamInventorySummary: async (user, options) => {
+            state.inventoryCalls.push({ user, options });
+            return {
+                provider: { status: 'connected' },
+                appId: '730',
+                appName: 'Counter-Strike 2',
+                currency: 'EUR',
+                totalValue: 0,
+                totalItems: 0,
+                totalItemsWithPrice: 0,
+                totalItemsUnmarketable: 0,
+                pricesPending: false,
+                items: [],
+                fetchedAt: '2026-05-04T00:00:00.000Z',
+                cache: { inventory: 'miss', prices: { hits: 0, misses: 0, skipped: 0 } },
             };
         },
         ...overrides.steamService,
@@ -108,4 +126,63 @@ test('GET /api/v1/integrations/steam/deals returns Steam daily deals', async (t)
         language: 'spanish',
         limit: '4',
     });
+});
+
+test('GET /api/v1/integrations/steam/inventory returns the summary with query params honoured', async (t) => {
+    const summary = {
+        provider: { status: 'connected' },
+        appId: '730',
+        appName: 'Counter-Strike 2',
+        currency: 'EUR',
+        totalValue: 51.5,
+        totalItems: 3,
+        totalItemsWithPrice: 2,
+        totalItemsUnmarketable: 1,
+        pricesPending: false,
+        items: [],
+        fetchedAt: '2026-05-04T00:00:00.000Z',
+        cache: { inventory: 'miss', prices: { hits: 0, misses: 2, skipped: 0 } },
+    };
+    const inventoryCalls = [];
+    const { app, cleanup } = createSteamRouteApp({
+        steamService: {
+            getSteamInventorySummary: async (user, options) => {
+                inventoryCalls.push({ user, options });
+                return summary;
+            },
+        },
+    });
+    t.after(cleanup);
+
+    const response = await request(app)
+        .get('/api/v1/integrations/steam/inventory')
+        .query({ appId: '730', currency: 'EUR', sortBy: 'priceDesc', force: 'true' });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.success, true);
+    assert.deepEqual(response.body.data, summary);
+
+    assert.equal(inventoryCalls.length, 1);
+    assert.deepEqual(inventoryCalls[0].options, {
+        appId: '730', currency: 'EUR', sortBy: 'priceDesc', force: true,
+    });
+});
+
+test('GET /api/v1/integrations/steam/inventory surfaces STEAM_INVENTORY_PRIVATE as 412', async (t) => {
+    const { app, cleanup } = createSteamRouteApp({
+        steamService: {
+            getSteamInventorySummary: async () => {
+                const error = new Error('Your Steam inventory is private.');
+                error.status = 412;
+                error.code = 'STEAM_INVENTORY_PRIVATE';
+                throw error;
+            },
+        },
+    });
+    t.after(cleanup);
+
+    const response = await request(app).get('/api/v1/integrations/steam/inventory?appId=730');
+    assert.equal(response.status, 412);
+    assert.equal(response.body.success, false);
+    assert.equal(response.body.error.code, 'STEAM_INVENTORY_PRIVATE');
 });

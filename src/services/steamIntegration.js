@@ -20,6 +20,130 @@ const STEAM_PERSONA_STATES = {
     5: 'looking_to_trade',
     6: 'looking_to_play',
 };
+const STEAM_COMMUNITY_BASE_URL = 'https://steamcommunity.com';
+const STEAM_INVENTORY_IMAGE_BASE = 'https://community.akamai.steamstatic.com/economy/image';
+const STEAM_PRICE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const STEAM_MARKET_PRICEOVERVIEW_URL = 'https://steamcommunity.com/market/priceoverview';
+const STEAM_CURRENCY_CODE = {
+    EUR: 3,
+    USD: 1,
+    GBP: 2,
+};
+
+function buildSteamItemImageUrl(iconPath) {
+    if (!iconPath) return null;
+    return `${STEAM_INVENTORY_IMAGE_BASE}/${iconPath}/360fx360f`;
+}
+
+function buildSteamMarketListingUrl(appId, marketHashName) {
+    return `${STEAM_COMMUNITY_BASE_URL}/market/listings/${appId}/${encodeURIComponent(marketHashName)}`;
+}
+
+function normalizeSteamTag(tag) {
+    return {
+        category: tag?.localized_category_name || tag?.category || '',
+        name: tag?.localized_tag_name || tag?.name || '',
+        color: tag?.color ? `#${String(tag.color).replace(/^#/, '')}` : null,
+    };
+}
+
+function findRarityColor(tags) {
+    if (!Array.isArray(tags)) return null;
+    const rarity = tags.find((tag) => tag?.category === 'Rarity' && tag?.color);
+    return rarity ? `#${String(rarity.color).replace(/^#/, '')}` : null;
+}
+
+function buildItemKey(item) {
+    return `${item?.classid || ''}:${item?.instanceid || ''}`;
+}
+
+function isAssetIdNewer(candidate, current) {
+    const a = String(candidate || '').trim();
+    const b = String(current || '').trim();
+    if (!a) return false;
+    if (!b) return true;
+    try {
+        return BigInt(a) > BigInt(b);
+    } catch (_error) {
+        return false;
+    }
+}
+
+function compareAssetIdsDesc(a, b) {
+    const aStr = String(a || '0');
+    const bStr = String(b || '0');
+    if (aStr === bStr) return 0;
+    try {
+        const aBig = BigInt(aStr);
+        const bBig = BigInt(bStr);
+        if (aBig === bBig) return 0;
+        return aBig > bBig ? -1 : 1;
+    } catch (_error) {
+        return aStr.localeCompare(bStr);
+    }
+}
+
+function parseSteamInventory(payload, { appId }) {
+    if (!payload || payload.success === false) return [];
+    const assets = Array.isArray(payload.assets) ? payload.assets : [];
+    const descriptions = Array.isArray(payload.descriptions) ? payload.descriptions : [];
+    if (assets.length === 0 || descriptions.length === 0) return [];
+
+    const descriptionsByKey = new Map();
+    for (const desc of descriptions) {
+        descriptionsByKey.set(buildItemKey(desc), desc);
+    }
+
+    const itemsByKey = new Map();
+    for (const asset of assets) {
+        const key = buildItemKey(asset);
+        const description = descriptionsByKey.get(key);
+        if (!description) continue;
+
+        const assetId = String(asset.assetid || '');
+
+        const existing = itemsByKey.get(key);
+        if (existing) {
+            existing.quantity += 1;
+            if (isAssetIdNewer(assetId, existing.latestAssetId)) {
+                existing.latestAssetId = assetId;
+            }
+            continue;
+        }
+
+        const marketHashName = String(description.market_hash_name || description.market_name || description.name || '').trim();
+        if (!marketHashName) continue;
+
+        itemsByKey.set(key, {
+            id: `${appId}_${asset.classid}_${asset.instanceid}`,
+            marketHashName,
+            name: String(description.name || marketHashName),
+            marketName: String(description.market_name || marketHashName),
+            iconUrl: buildSteamItemImageUrl(description.icon_url),
+            iconUrlLarge: buildSteamItemImageUrl(description.icon_url_large || description.icon_url),
+            type: description.type ? String(description.type) : null,
+            rarityColor: findRarityColor(description.tags),
+            marketable: Number(description.marketable) === 1,
+            tradable: Number(description.tradable) === 1,
+            quantity: 1,
+            latestAssetId: assetId,
+            tags: Array.isArray(description.tags) ? description.tags.map(normalizeSteamTag) : [],
+            descriptions: Array.isArray(description.descriptions)
+                ? description.descriptions
+                    .filter((entry) => entry && typeof entry.value === 'string')
+                    .map((entry) => ({
+                        value: String(entry.value),
+                        color: entry.color ? `#${String(entry.color).replace(/^#/, '')}` : null,
+                        type: entry.type || null,
+                    }))
+                : [],
+            marketUrl: buildSteamMarketListingUrl(appId, marketHashName),
+            price: null,
+        });
+    }
+
+    return Array.from(itemsByKey.values());
+}
 
 const _steamCache = new Map();
 
@@ -287,6 +411,228 @@ async function steamApiRequest(path, params = {}) {
     return payload;
 }
 
+const STEAM_APP_CONTEXT_ID = {
+    '753': '6',
+};
+
+function getSteamContextId(appId) {
+    return STEAM_APP_CONTEXT_ID[String(appId)] || '2';
+}
+
+async function fetchSteamInventory(steamId, appId, options = {}) {
+    const language = options.language ? normalizeLanguage(options.language) : 'english';
+    const contextId = getSteamContextId(appId);
+    const url = new URL(`${STEAM_COMMUNITY_BASE_URL}/inventory/${steamId}/${appId}/${contextId}`);
+    url.searchParams.set('l', language);
+    url.searchParams.set('count', '2000');
+
+    const response = await fetch(url, {
+        headers: {
+            Accept: 'application/json, text/javascript, */*; q=0.01',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            Referer: `${STEAM_COMMUNITY_BASE_URL}/profiles/${steamId}/inventory/`,
+            'X-Requested-With': 'XMLHttpRequest',
+        },
+    });
+    const payload = await parseSteamResponse(response);
+
+    if (response.status === 403) {
+        throw createLinkedAccountError(
+            412,
+            'STEAM_INVENTORY_PRIVATE',
+            'Your Steam inventory is private. Open Steam → Edit profile → Privacy and set Inventory to Public.',
+        );
+    }
+    if (response.status === 429) {
+        throw createLinkedAccountError(
+            429,
+            'STEAM_RATE_LIMITED',
+            'Steam rate-limited the inventory request. Try again in a minute.',
+        );
+    }
+    if (!response.ok) {
+        throw createSteamApiError(response, payload, `Steam returned error ${response.status} fetching inventory.`);
+    }
+    if (payload && payload.success === false) {
+        throw createLinkedAccountError(
+            412,
+            'STEAM_INVENTORY_PRIVATE',
+            'Your Steam inventory is private or unavailable.',
+        );
+    }
+
+    return parseSteamInventory(payload, { appId: String(appId) });
+}
+
+const STEAM_INVENTORY_CACHE_TTL_MS = 60 * 60 * 1000;
+
+async function getSteamInventory(user, options = {}) {
+    const steam = assertSteamLinked(user);
+    const steamId = steam.profile.steamId;
+    const appId = String(options.appId || '730');
+    const contextId = getSteamContextId(appId);
+    const cacheKey = `inv:${steamId}:${appId}:${contextId}`;
+
+    if (options.force) {
+        _steamCache.delete(cacheKey);
+    } else {
+        const cached = _steamCache.get(cacheKey);
+        if (cached && Date.now() - cached.ts < STEAM_INVENTORY_CACHE_TTL_MS) {
+            return { ...cached.value, cacheStatus: 'hit' };
+        }
+    }
+
+    const items = await fetchSteamInventory(steamId, appId);
+    const value = { steamId, appId, contextId, items };
+    _steamCache.set(cacheKey, { value, ts: Date.now() });
+
+    return { ...value, cacheStatus: options.force ? 'forced' : 'miss' };
+}
+
+let _steamPriceQueueTail = Promise.resolve();
+let _steamPriceLastRunAt = 0;
+
+function getSteamPriceThrottleMs() {
+    const value = Number(process.env.STEAM_PRICE_THROTTLE_MS);
+    return Number.isFinite(value) && value >= 0 ? value : 1000;
+}
+
+function getSteamPriceBudgetMs() {
+    const value = Number(process.env.STEAM_PRICE_BUDGET_MS);
+    return Number.isFinite(value) && value >= 0 ? value : 10000;
+}
+
+function enqueueSteamPriceTask(task) {
+    const next = _steamPriceQueueTail.then(async () => {
+        const throttleMs = getSteamPriceThrottleMs();
+        const elapsed = Date.now() - _steamPriceLastRunAt;
+        if (throttleMs > 0 && elapsed < throttleMs) {
+            await new Promise((resolve) => setTimeout(resolve, throttleMs - elapsed));
+        }
+        _steamPriceLastRunAt = Date.now();
+        return task();
+    });
+    _steamPriceQueueTail = next.catch(() => undefined);
+    return next;
+}
+
+function parseSteamPriceString(value) {
+    if (typeof value !== 'string') return null;
+    const stripped = value.replace(/[^\d.,-]/g, '');
+    if (!stripped) return null;
+
+    const lastComma = stripped.lastIndexOf(',');
+    const lastPeriod = stripped.lastIndexOf('.');
+    const lastSep = Math.max(lastComma, lastPeriod);
+
+    const normalized = lastSep === -1
+        ? stripped
+        : `${stripped.slice(0, lastSep).replace(/[.,]/g, '')}.${stripped.slice(lastSep + 1)}`;
+
+    const num = Number(normalized);
+    return Number.isFinite(num) ? Math.round(num * 100) / 100 : null;
+}
+
+function parseSteamVolume(value) {
+    if (typeof value !== 'string') return null;
+    const cleaned = value.replace(/[^\d]/g, '');
+    return cleaned ? Number(cleaned) : null;
+}
+
+async function fetchSteamItemPrice(marketHashName, { appId, currency }) {
+    const url = new URL(STEAM_MARKET_PRICEOVERVIEW_URL);
+    url.searchParams.set('appid', String(appId));
+    url.searchParams.set('currency', String(STEAM_CURRENCY_CODE[currency] || 3));
+    url.searchParams.set('market_hash_name', marketHashName);
+
+    const response = await fetch(url, {
+        headers: {
+            Accept: 'application/json',
+            'User-Agent': 'Prometeo/1.0 (+steam-prices)',
+        },
+    });
+    const payload = await parseSteamResponse(response);
+
+    if (!response.ok || !payload || payload.success === false) {
+        return null;
+    }
+
+    const lowest = parseSteamPriceString(payload.lowest_price);
+    if (lowest === null) return null;
+    const median = parseSteamPriceString(payload.median_price);
+    const volume = parseSteamVolume(payload.volume);
+
+    return {
+        lowest,
+        median,
+        volume,
+        currency,
+        fetchedAt: new Date().toISOString(),
+    };
+}
+
+async function getSteamItemPrices(names, { appId, currency }) {
+    const uniqueNames = Array.from(new Set(names.filter(Boolean)));
+    const prices = {};
+    const cache = { hits: 0, misses: 0, skipped: 0, errors: 0 };
+    const budgetMs = getSteamPriceBudgetMs();
+    const deadline = Date.now() + budgetMs;
+    const pending = [];
+
+    for (const name of uniqueNames) {
+        const cacheKey = `price:${appId}:${currency}:${name}`;
+        const cached = _steamCache.get(cacheKey);
+        if (cached && Date.now() - cached.ts < STEAM_PRICE_CACHE_TTL_MS) {
+            prices[name] = cached.value;
+            cache.hits += 1;
+            continue;
+        }
+        pending.push({ name, cacheKey });
+    }
+
+    let stillCounting = true;
+
+    const tasks = pending.map(({ name, cacheKey }) =>
+        enqueueSteamPriceTask(async () => {
+            try {
+                const price = await fetchSteamItemPrice(name, { appId, currency });
+                if (price) {
+                    _steamCache.set(cacheKey, { value: price, ts: Date.now() });
+                    if (stillCounting) {
+                        prices[name] = price;
+                        cache.misses += 1;
+                    }
+                } else if (stillCounting) {
+                    prices[name] = null;
+                    cache.errors += 1;
+                }
+            } catch (_error) {
+                if (stillCounting) {
+                    prices[name] = null;
+                    cache.errors += 1;
+                }
+            }
+        }),
+    );
+
+    if (tasks.length > 0) {
+        const allDone = Promise.allSettled(tasks);
+        const timeout = new Promise((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now())));
+        await Promise.race([allDone, timeout]);
+        stillCounting = false;
+
+        for (const { name } of pending) {
+            if (!(name in prices)) {
+                prices[name] = null;
+                cache.skipped += 1;
+            }
+        }
+    }
+
+    return { prices, cache };
+}
+
 async function fetchSteamProfiles(steamIds) {
     const ids = Array.from(new Set(
         steamIds
@@ -533,13 +879,112 @@ async function getSteamDeals(options = {}) {
     return result;
 }
 
+const STEAM_APP_NAMES = {
+    '730': 'Counter-Strike 2',
+    '570': 'Dota 2',
+    '440': 'Team Fortress 2',
+    '252490': 'Rust',
+    '753': 'Steam Community',
+};
+
+const VALID_SORT_BY = ['priceDesc', 'priceAsc', 'name', 'dateDesc', 'dateAsc'];
+
+function compareItemsForSort(a, b, sortBy) {
+    if (sortBy === 'name') {
+        return a.marketName.toLowerCase().localeCompare(b.marketName.toLowerCase());
+    }
+    if (sortBy === 'dateDesc') {
+        return compareAssetIdsDesc(a.latestAssetId, b.latestAssetId);
+    }
+    if (sortBy === 'dateAsc') {
+        return -compareAssetIdsDesc(a.latestAssetId, b.latestAssetId);
+    }
+    const aHasPrice = a.price !== null;
+    const bHasPrice = b.price !== null;
+    if (aHasPrice !== bHasPrice) return aHasPrice ? -1 : 1;
+    if (!aHasPrice && !bHasPrice) return 0;
+    if (sortBy === 'priceAsc') return a.price.lowest - b.price.lowest;
+    return b.price.lowest - a.price.lowest;
+}
+
+async function getSteamInventorySummary(user, options = {}) {
+    const appId = String(options.appId || '730');
+    const currency = String(options.currency || 'EUR').toUpperCase();
+    const sortBy = VALID_SORT_BY.includes(options.sortBy) ? options.sortBy : 'priceDesc';
+
+    if (!STEAM_CURRENCY_CODE[currency]) {
+        throw createLinkedAccountError(400, 'STEAM_CURRENCY_INVALID', `Unsupported currency: ${currency}.`);
+    }
+
+    const appName = STEAM_APP_NAMES[appId] || `Steam app ${appId}`;
+    const inventory = await getSteamInventory(user, { appId, force: Boolean(options.force) });
+
+    if (inventory.items.length === 0) {
+        throw createLinkedAccountError(
+            404,
+            'STEAM_INVENTORY_EMPTY',
+            `No items in your ${appName} inventory.`,
+        );
+    }
+
+    const marketableNames = Array.from(new Set(
+        inventory.items.filter((item) => item.marketable).map((item) => item.marketHashName),
+    ));
+    const priceResult = marketableNames.length > 0
+        ? await getSteamItemPrices(marketableNames, { appId, currency })
+        : { prices: {}, cache: { hits: 0, misses: 0, skipped: 0, errors: 0 } };
+
+    const items = inventory.items.map((item) => ({
+        ...item,
+        price: item.marketable ? (priceResult.prices[item.marketHashName] ?? null) : null,
+    }));
+    items.sort((a, b) => compareItemsForSort(a, b, sortBy));
+
+    const totalValue = items.reduce((acc, item) => {
+        if (!item.marketable || !item.price) return acc;
+        return acc + item.price.lowest * item.quantity;
+    }, 0);
+    const totalItemsWithPrice = items.filter((it) => it.price !== null).length;
+    const totalItemsUnmarketable = items.filter((it) => !it.marketable).length;
+    const pricesPending = priceResult.cache.skipped > 0;
+
+    const provider = parseSteamStatus(user?.linkedAccounts?.steam);
+
+    return {
+        provider,
+        appId,
+        appName,
+        currency,
+        totalValue: Math.round(totalValue * 100) / 100,
+        totalItems: items.length,
+        totalItemsWithPrice,
+        totalItemsUnmarketable,
+        pricesPending,
+        items,
+        fetchedAt: new Date().toISOString(),
+        cache: {
+            inventory: inventory.cacheStatus,
+            prices: {
+                hits: priceResult.cache.hits,
+                misses: priceResult.cache.misses,
+                skipped: priceResult.cache.skipped,
+            },
+        },
+    };
+}
+
 module.exports = {
     STEAM_SCOPES,
     buildSteamAuthorizeUrl,
     completeSteamLink,
     disconnectSteamAccount,
+    fetchSteamInventory,
     getSteamDeals,
     getSteamFriendsPresence,
+    getSteamInventory,
+    getSteamInventorySummary,
+    getSteamItemPrices,
     getSteamStatus,
+    parseSteamInventory,
     verifySteamOpenId,
 };

@@ -6,6 +6,7 @@ const { ok } = require('../http/responses');
 const {
     getSteamDeals,
     getSteamFriendsPresence,
+    getSteamInventorySummary,
 } = require('../services/steamIntegration');
 
 const router = express.Router();
@@ -27,6 +28,17 @@ router.get('/deals', authenticateToken, asyncHandler(async (req, res) => {
     });
 
     return ok(res, deals);
+}));
+
+router.get('/inventory', authenticateToken, asyncHandler(async (req, res) => {
+    const summary = await getSteamInventorySummary(req.user, {
+        appId: req.query.appId,
+        currency: req.query.currency,
+        sortBy: req.query.sortBy,
+        force: String(req.query.force || '').toLowerCase() === 'true',
+    });
+
+    return ok(res, summary);
 }));
 
 module.exports = router;
