@@ -18,6 +18,62 @@ const LEAGUES = Object.freeze({
             channelLabel: 'LaLiga on YouTube',
         }),
     }),
+    premier: Object.freeze({
+        id: 'premier',
+        label: 'Premier League',
+        country: 'England',
+        supportsStandings: true,
+        footballData: Object.freeze({
+            code: 'PL',
+        }),
+        highlights: Object.freeze({
+            youtubeChannelId: 'UCG5qGWdu8nIRZqJ_GgDwQ-w',
+            channelUrl: 'https://www.youtube.com/@premierleague',
+            channelLabel: 'Premier League on YouTube',
+        }),
+    }),
+    bundesliga: Object.freeze({
+        id: 'bundesliga',
+        label: 'Bundesliga',
+        country: 'Germany',
+        supportsStandings: true,
+        footballData: Object.freeze({
+            code: 'BL1',
+        }),
+        highlights: Object.freeze({
+            youtubeChannelId: 'UCcZdJZb8svJxNa5Ms0qPdHQ',
+            channelUrl: 'https://www.youtube.com/@bundesliga',
+            channelLabel: 'Bundesliga on YouTube',
+        }),
+    }),
+    seriea: Object.freeze({
+        id: 'seriea',
+        label: 'Serie A',
+        country: 'Italy',
+        supportsStandings: true,
+        footballData: Object.freeze({
+            code: 'SA',
+        }),
+        highlights: Object.freeze({
+            youtubeChannelId: 'UCBJeMCIeLQos7wacox4hmLQ',
+            channelUrl: 'https://www.youtube.com/@SerieA',
+            channelLabel: 'Serie A on YouTube',
+        }),
+    }),
+    ligue1: Object.freeze({
+        id: 'ligue1',
+        label: 'Ligue 1',
+        country: 'France',
+        supportsStandings: true,
+        footballData: Object.freeze({
+            code: 'FL1',
+        }),
+        highlights: Object.freeze({
+            youtubeChannelId: 'UCFKBy_e5wTqWtbDU4yiTcXg',
+            channelUrl: 'https://www.youtube.com/@Ligue1',
+            channelLabel: 'Ligue 1 on YouTube',
+        }),
+    }),
     champions: Object.freeze({
         id: 'champions',
         label: 'UEFA Champions League',
@@ -35,6 +91,17 @@ const LEAGUES = Object.freeze({
 });
 
 const SUPPORTED_LEAGUE_IDS = Object.freeze(Object.keys(LEAGUES));
+
+// Domestic leagues only, in tie-break priority order. Used to auto-detect a
+// team's league from its name. `champions` is intentionally excluded — it is
+// a separate widget mode, not a team's "home" league.
+const DOMESTIC_LEAGUE_IDS = Object.freeze([
+    'laliga',
+    'premier',
+    'bundesliga',
+    'seriea',
+    'ligue1',
+]);
 
 function isSupportedLeague(leagueId) {
     if (typeof leagueId !== 'string' || leagueId.length === 0) {
@@ -60,6 +127,7 @@ function listLeagues() {
 
 module.exports = {
     SUPPORTED_LEAGUE_IDS,
+    DOMESTIC_LEAGUE_IDS,
     isSupportedLeague,
     getLeague,
     listLeagues,

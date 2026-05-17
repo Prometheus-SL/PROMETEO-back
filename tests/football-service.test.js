@@ -549,3 +549,43 @@ test('getTeamSnapshot survives scraper exceptions', async () => {
     assert.equal(snapshot.liveMatch.home.score, 2);
     assert.equal(snapshot.liveMatch.away.score, 0);
 });
+
+test('resolveLeagueByTeam finds a team in its domestic league', async () => {
+    const teamsByLeague = {
+        laliga: [{ id: 86, name: 'Real Madrid CF', shortName: 'Real Madrid', tla: 'RMA' }],
+        premier: [{ id: 65, name: 'Manchester City FC', shortName: 'Man City', tla: 'MCI' }],
+        bundesliga: [{ id: 5, name: 'FC Bayern München', shortName: 'Bayern M', tla: 'FCB' }],
+        seriea: [{ id: 108, name: 'FC Internazionale Milano', shortName: 'Inter', tla: 'INT' }],
+        ligue1: [{ id: 524, name: 'Paris Saint-Germain FC', shortName: 'PSG', tla: 'PSG' }],
+    };
+    const fetch = async (url) => {
+        const code = decodeURIComponent(url).match(/competitions\/([A-Z0-9]+)\/teams/)?.[1];
+        const map = { PD: 'laliga', PL: 'premier', BL1: 'bundesliga', SA: 'seriea', FL1: 'ligue1' };
+        return {
+            ok: true,
+            status: 200,
+            json: async () => ({ teams: teamsByLeague[map[code]] ?? [] }),
+        };
+    };
+    process.env.FOOTBALL_DATA_API_KEY = 'test-key';
+    const { createFootballService } = require('../src/services/footballService');
+    const svc = createFootballService({ fetch });
+
+    const city = await svc.resolveLeagueByTeam('Manchester City');
+    assert.equal(city.leagueId, 'premier');
+    assert.equal(city.team.id, 65);
+
+    const inter = await svc.resolveLeagueByTeam('inter'); // matches by shortName 'Inter'
+    assert.equal(inter.leagueId, 'seriea');
+    assert.equal(inter.team.id, 108);
+
+    await assert.rejects(
+        () => svc.resolveLeagueByTeam('Boca Juniors'),
+        (err) => err.code === 'FOOTBALL_TEAM_NOT_FOUND' && err.status === 404,
+    );
+
+    await assert.rejects(
+        () => svc.resolveLeagueByTeam(''),
+        (err) => err.code === 'FOOTBALL_TEAM_NAME_REQUIRED' && err.status === 400,
+    );
+});

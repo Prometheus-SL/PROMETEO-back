@@ -35,12 +35,16 @@ function collectTargets(moduleInstance, page, actionIds) {
     if (allowedAiActions.length === 0) return [];
 
     const config = getConfig(moduleInstance);
-    const rawLeagueId = normalizeText(config.leagueId || 'laliga');
-    const leagueId = isSupportedLeague(rawLeagueId) ? rawLeagueId : 'laliga';
+    // "leagues" (or any non-concrete value, incl. missing) => auto-detect the
+    // domestic league from the configured team at execute time. A concrete
+    // supported id (e.g. "champions") is used directly, unchanged.
+    const rawLeagueId = normalizeText(config.leagueId || 'leagues');
+    const leagueId = isSupportedLeague(rawLeagueId) ? rawLeagueId : null;
     const teamName = normalizeText(config.teamName);
+    const leagueLabel = leagueId || 'leagues';
 
-    return [targetBase('football', 'football', moduleInstance, page, teamName || `Football ${leagueId}`, {
-        safeKey: `football:${leagueId}:${teamName.toLowerCase() || moduleInstanceId(moduleInstance)}`,
+    return [targetBase('football', 'football', moduleInstance, page, teamName || `Football ${leagueLabel}`, {
+        safeKey: `football:${leagueLabel}:${teamName.toLowerCase() || moduleInstanceId(moduleInstance)}`,
         leagueId,
         teamName,
         allowedAiActions,
@@ -86,6 +90,24 @@ function formatMatch(match) {
     return `${home}${score} ${away}${when ? ` (${when})` : ''}`;
 }
 
+// In "leagues" mode target.leagueId is null; resolve the concrete domestic
+// league from the team name (same engine the widget uses). Concrete ids
+// (e.g. "champions") short-circuit and need no team.
+async function resolveEffectiveLeague(target, teamName) {
+    if (target.leagueId) return target.leagueId;
+    if (!teamName) return null;
+    try {
+        const resolved = await footballService.resolveLeagueByTeam(teamName);
+        return resolved.leagueId;
+    } catch (err) {
+        // Genuine "no such team" → soft null (caller shows the configure-team
+        // hint). Transient/API errors propagate so safeExecute surfaces a
+        // meaningful message instead of a misleading "configure a team".
+        if (err && err.code === 'FOOTBALL_TEAM_NOT_FOUND') return null;
+        throw err;
+    }
+}
+
 async function execute(call, context) {
     if (call?.name !== 'football_get_summary') {
         return null;
@@ -106,10 +128,14 @@ async function execute(call, context) {
                 return errorResult('Este widget de futbol no expone la clasificacion a Spark.');
             }
 
-            const data = await footballService.getStandings(target.leagueId);
+            const leagueId = await resolveEffectiveLeague(target, team || target.teamName);
+            if (!leagueId) {
+                return errorResult('Configura un equipo para ver su liga.');
+            }
+            const data = await footballService.getStandings(leagueId);
             const topRows = (data.rows || []).slice(0, 5)
                 .map((row) => `${row.position}. ${row.team?.shortName || row.team?.name}: ${row.points} pts`);
-            return okResult(`Clasificacion ${target.leagueId}: ${topRows.join(', ')}.`, data);
+            return okResult(`Clasificacion ${leagueId}: ${topRows.join(', ')}.`, data);
         }
 
         const teamName = team || target.teamName;
@@ -118,7 +144,11 @@ async function execute(call, context) {
                 return errorResult('Este widget de futbol no expone el resumen de equipo a Spark.');
             }
 
-            const data = await footballService.getTeamSnapshotByName(target.leagueId, teamName);
+            const leagueId = await resolveEffectiveLeague(target, teamName);
+            if (!leagueId) {
+                return errorResult('Configura un equipo para ver su liga.');
+            }
+            const data = await footballService.getTeamSnapshotByName(leagueId, teamName);
             const live = formatMatch(data.liveMatch);
             const last = formatMatch(data.lastMatch);
             const next = formatMatch(data.nextMatch);
@@ -136,7 +166,11 @@ async function execute(call, context) {
             return errorResult('Este widget de futbol no expone el partido destacado a Spark.');
         }
 
-        const data = await footballService.getFeaturedMatch(target.leagueId);
+        const leagueId = await resolveEffectiveLeague(target, team || target.teamName);
+        if (!leagueId) {
+            return errorResult('Configura un equipo para ver su liga.');
+        }
+        const data = await footballService.getFeaturedMatch(leagueId);
         return okResult(formatMatch(data.match) || 'No encontre partido destacado ahora mismo.', data);
     });
 }

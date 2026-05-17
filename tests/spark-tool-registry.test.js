@@ -334,7 +334,7 @@ test('Spark tool registry discovers safe tools for every dashboard widget family
                 {
                     _id: 'football-module',
                     meta: moduleMeta('football-widget-compact', 'Football'),
-                    config: { leagueId: 'laliga', teamName: 'Real Madrid' },
+                    config: { leagueId: 'leagues', teamName: 'Real Madrid' },
                 },
                 {
                     _id: 'minecraft-module',

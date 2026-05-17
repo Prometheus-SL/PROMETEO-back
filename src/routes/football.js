@@ -27,6 +27,19 @@ router.get(
 );
 
 router.get(
+    '/resolve-team',
+    authenticateToken,
+    asyncHandler(async (req, res) => {
+        const name = String(req.query.name || '').trim();
+        if (!name) {
+            throw createHttpError(400, 'FOOTBALL_TEAM_NAME_REQUIRED', 'A team name is required.');
+        }
+        const data = await service.resolveLeagueByTeam(name);
+        return ok(res, data);
+    }),
+);
+
+router.get(
     '/leagues/:leagueId/standings',
     authenticateToken,
     asyncHandler(async (req, res) => {

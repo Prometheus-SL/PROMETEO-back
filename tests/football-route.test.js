@@ -46,6 +46,13 @@ function makeService(overrides = {}) {
             calls.push({ name: 'getFeaturedMatch', leagueId });
             return { match: null, highlights: null };
         },
+        resolveLeagueByTeam: async (name) => {
+            calls.push({ name: 'resolveLeagueByTeam', teamName: name });
+            return {
+                leagueId: 'premier',
+                team: { id: 65, name: 'Manchester City FC', shortName: 'Man City', code: 'MCI', crest: '' },
+            };
+        },
         ...overrides,
     };
     return { service, calls };
@@ -184,4 +191,24 @@ test('GET /leagues/:leagueId/featured returns the featured match', async (t) => 
     const res = await request(app).get('/api/v1/integrations/football/leagues/laliga/featured');
     assert.equal(res.status, 200);
     assert.deepEqual(calls, [{ name: 'getFeaturedMatch', leagueId: 'laliga' }]);
+});
+
+test('GET /resolve-team resolves the team league by name', async (t) => {
+    const { app, cleanup, calls } = buildApp();
+    t.after(cleanup);
+    const res = await request(app)
+        .get('/api/v1/integrations/football/resolve-team')
+        .query({ name: 'Manchester City' });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.data.leagueId, 'premier');
+    assert.equal(res.body.data.team.id, 65);
+    assert.deepEqual(calls, [{ name: 'resolveLeagueByTeam', teamName: 'Manchester City' }]);
+});
+
+test('GET /resolve-team rejects an empty name', async (t) => {
+    const { app, cleanup } = buildApp();
+    t.after(cleanup);
+    const res = await request(app).get('/api/v1/integrations/football/resolve-team');
+    assert.equal(res.status, 400);
+    assert.equal(res.body.error.code, 'FOOTBALL_TEAM_NAME_REQUIRED');
 });

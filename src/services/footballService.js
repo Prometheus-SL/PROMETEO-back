@@ -1,6 +1,6 @@
 const { createHttpError } = require('../http/errors');
 const { createCache } = require('./footballCache');
-const { getLeague } = require('./footballLeagues');
+const { getLeague, DOMESTIC_LEAGUE_IDS } = require('./footballLeagues');
 
 const FOOTBALL_DATA_BASE_URL = 'https://api.football-data.org/v4';
 const YOUTUBE_API_BASE_URL = 'https://www.googleapis.com/youtube/v3';
@@ -570,10 +570,42 @@ function createFootballService({
         return { match: featured ?? null, highlights: highlights ?? null };
     }
 
+    // Walk the domestic leagues in priority order and return the first one
+    // whose roster matches `name`. Within a league we prefer an exact
+    // name/shortName hit, mirroring getTeamSnapshotByName. Team lists are
+    // cached 24h, so after warm-up this is at most one football-data call.
+    async function resolveLeagueByTeam(name) {
+        const trimmed = String(name || '').trim();
+        if (!trimmed) {
+            throw createHttpError(400, 'FOOTBALL_TEAM_NAME_REQUIRED', 'A team name is required.');
+        }
+        // lower is the expanded query used only for the exact-match preference below; searchTeams() expands the nickname again internally for its substring filter.
+        const lower = expandNickname(trimmed);
+        for (const leagueId of DOMESTIC_LEAGUE_IDS) {
+            let matches = [];
+            try {
+                matches = await searchTeams(leagueId, trimmed);
+            } catch {
+                continue; // a single league outage shouldn't block the rest
+            }
+            if (matches.length === 0) continue;
+            const exact = matches.find(
+                (t) => normalizeText(t.name) === lower || normalizeText(t.shortName) === lower,
+            );
+            return { leagueId, team: exact ?? matches[0] };
+        }
+        throw createHttpError(
+            404,
+            'FOOTBALL_TEAM_NOT_FOUND',
+            `No team in the supported leagues matches "${trimmed}".`,
+        );
+    }
+
     return {
         getStandings,
         listLeagueTeams,
         searchTeams,
+        resolveLeagueByTeam,
         getTeamSnapshot,
         getTeamSnapshotByName,
         getFeaturedMatch,
