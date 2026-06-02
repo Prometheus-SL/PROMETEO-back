@@ -6,6 +6,7 @@ const User = require('../models/User');
 const Agent = require('../models/Agent');
 const QRCodeModel = require('../models/QRCode');
 const EmailToken = require('../models/EmailToken');
+const { hashApiKey } = require('../services/agentApiKey');
 const {
     authenticateToken,
     authorizeRole,
@@ -113,8 +114,80 @@ function serializeTokens(tokens) {
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
         sessionId: tokens.sessionId,
-        expiresIn: null,
+        expiresIn: tokens.expiresIn ?? null,
     };
+}
+
+// ── Cookie HttpOnly del refresh token (login web) ──────────────────────────────
+// El navegador guarda el refresh token en una cookie HttpOnly (no accesible por JS, así
+// un XSS no puede robarlo de localStorage). El kiosko (QR) y HERMES siguen usando el
+// token en el body. Requiere CORS con credenciales; en cross-site, SameSite=None.
+const REFRESH_COOKIE_NAME = process.env.AUTH_REFRESH_COOKIE_NAME || 'prometeo_rt';
+const REFRESH_COOKIE_ENABLED = process.env.AUTH_REFRESH_COOKIE !== 'false';
+const REFRESH_COOKIE_SAMESITE = (process.env.AUTH_COOKIE_SAMESITE || 'lax').toLowerCase();
+const REFRESH_COOKIE_SECURE = process.env.AUTH_COOKIE_SECURE
+    ? process.env.AUTH_COOKIE_SECURE === 'true'
+    : process.env.NODE_ENV === 'production';
+const REFRESH_COOKIE_PATH = '/auth';
+const REFRESH_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+function refreshCookieOptions() {
+    const options = {
+        httpOnly: true,
+        secure: REFRESH_COOKIE_SECURE,
+        sameSite: REFRESH_COOKIE_SAMESITE,
+        path: REFRESH_COOKIE_PATH,
+    };
+    if (process.env.AUTH_COOKIE_DOMAIN) {
+        options.domain = process.env.AUTH_COOKIE_DOMAIN;
+    }
+    return options;
+}
+
+function setRefreshCookie(res, refreshToken) {
+    if (!REFRESH_COOKIE_ENABLED || !refreshToken) {
+        return;
+    }
+    res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
+        ...refreshCookieOptions(),
+        maxAge: REFRESH_COOKIE_MAX_AGE_MS,
+    });
+}
+
+function clearRefreshCookie(res) {
+    if (!REFRESH_COOKIE_ENABLED) {
+        return;
+    }
+    res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
+}
+
+function readRefreshCookie(req) {
+    const header = req.headers?.cookie;
+    if (!header) {
+        return null;
+    }
+    const prefix = `${REFRESH_COOKIE_NAME}=`;
+    const cookie = header.split(';').map((part) => part.trim()).find((part) => part.startsWith(prefix));
+    if (!cookie) {
+        return null;
+    }
+    try {
+        return decodeURIComponent(cookie.slice(prefix.length));
+    } catch (_error) {
+        return cookie.slice(prefix.length);
+    }
+}
+
+// Inyecta el refresh token de la cookie en el body cuando el body no lo trae (web).
+function injectRefreshCookie(req, _res, next) {
+    if (!req.body || !req.body.refreshToken) {
+        const cookieToken = readRefreshCookie(req);
+        if (cookieToken) {
+            req.body = req.body || {};
+            req.body.refreshToken = cookieToken;
+        }
+    }
+    next();
 }
 
 function getLoginHistoryCutoffDate() {
@@ -245,7 +318,7 @@ async function findOrCreateAgentForUser(user, agentId) {
             agentId,
             name: agentId,
             description: 'Agent registered by authentication',
-            apiKey: randomBytes(32).toString('hex'),
+            apiKey: hashApiKey(randomBytes(32).toString('hex')),
             user: user._id,
             status: 'offline',
         });
@@ -271,7 +344,9 @@ async function ensureQrIssuedTokens(qrCode, user, req) {
         return qrCode.issuedTokens;
     }
 
-    const tokens = generateTokens(user);
+    // Login por QR = dispositivo de tipo kiosko (p. ej. Raspberry): sesión de larga
+    // duración para que la pantalla no se desloguee sola. Sigue siendo revocable.
+    const tokens = generateTokens(user, { kiosk: true });
     registerIssuedSession(user, tokens, req);
 
     qrCode.issuedSessionId = tokens.sessionId;
@@ -339,6 +414,7 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
         sessionId: tokens.sessionId,
         identifier: username,
     });
+    setRefreshCookie(res, tokens.refreshToken);
     return ok(res, {
         user: serializeUser(user),
         tokens: serializeTokens(tokens),
@@ -517,7 +593,7 @@ router.delete('/sessions/:sessionId', authenticateToken, asyncHandler(async (req
     return ok(res, null, { message: 'Session revoked' });
 }));
 
-router.post('/refresh', verifyRefreshToken, asyncHandler(async (req, res) => {
+router.post('/refresh', injectRefreshCookie, verifyRefreshToken, asyncHandler(async (req, res) => {
     const user = req.user;
     const sessionId = req.auth?.sessionId || randomUUID();
 
@@ -527,11 +603,12 @@ router.post('/refresh', verifyRefreshToken, asyncHandler(async (req, res) => {
     registerIssuedSession(user, tokens, req, { updateLastLogin: false });
     await user.save();
 
+    setRefreshCookie(res, tokens.refreshToken);
     return ok(res, serializeTokens(tokens));
 }));
 
 router.post('/logout', authenticateToken, asyncHandler(async (req, res) => {
-    const refreshToken = normalizeText(req.body?.refreshToken);
+    const refreshToken = normalizeText(req.body?.refreshToken) || readRefreshCookie(req);
     const user = req.user;
 
     if (refreshToken) {
@@ -541,6 +618,7 @@ router.post('/logout', authenticateToken, asyncHandler(async (req, res) => {
     }
 
     await user.save();
+    clearRefreshCookie(res);
     return ok(res, null, { message: 'Session closed successfully' });
 }));
 

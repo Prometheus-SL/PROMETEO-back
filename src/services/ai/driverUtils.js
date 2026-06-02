@@ -1,3 +1,5 @@
+const { decryptConfigSecrets } = require('../moduleSecrets');
+
 function normalizeText(value) {
     return String(value || '').trim();
 }
@@ -17,9 +19,11 @@ function getModuleId(moduleInstance) {
 }
 
 function getConfig(moduleInstance) {
-    return moduleInstance?.config && typeof moduleInstance.config === 'object'
+    const config = moduleInstance?.config && typeof moduleInstance.config === 'object'
         ? moduleInstance.config
         : {};
+    // Descifra los campos secretos (p. ej. apiToken) para uso server-side del driver.
+    return decryptConfigSecrets(getModuleId(moduleInstance), config);
 }
 
 function okResult(message, data = null) {

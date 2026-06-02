@@ -13,6 +13,11 @@ const GITHUB_TOKEN_URL = 'https://github.com/login/oauth/access_token';
 const GITHUB_API_BASE_URL = 'https://api.github.com';
 const GITHUB_API_VERSION = '2022-11-28';
 
+// `repo` es necesario para mostrar PRs de repos PRIVADOS (OAuth clásico no ofrece un
+// scope de solo-lectura privada). Mitigaciones del riesgo de escritura: el proxy GraphQL
+// (routes/github.js) bloquea mutation/subscription, así que el token NO puede usarse para
+// escribir a través del backend; además el token se guarda cifrado en reposo y nunca se
+// envía al cliente.
 const GITHUB_SCOPES = ['read:user', 'user:email', 'notifications', 'repo'];
 
 const _githubCache = new Map();

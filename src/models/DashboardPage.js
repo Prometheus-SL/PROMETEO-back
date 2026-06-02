@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { maskConfigSecrets } = require('../services/moduleSecrets');
 
 // Subschemas reutilizables
 const ModuleSizeSchema = new mongoose.Schema({
@@ -54,6 +55,18 @@ const InstalledModuleSchema = new mongoose.Schema({
     config: { type: mongoose.Schema.Types.Mixed, default: {} },
     position: { type: PositionSchema }
 }, { _id: true });
+
+// Al serializar a JSON (respuestas al cliente), enmascara los secretos de config. Aplica
+// tanto dentro de `page.modules` como cuando se devuelve el subdoc suelto. El driver lee
+// `config` por acceso directo (no pasa por toJSON), así que recibe el valor cifrado.
+InstalledModuleSchema.set('toJSON', {
+    transform(_doc, ret) {
+        if (ret && ret.config) {
+            ret.config = maskConfigSecrets(ret?.meta?.id, ret.config);
+        }
+        return ret;
+    },
+});
 
 const DashboardPageSchema = new mongoose.Schema({
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },

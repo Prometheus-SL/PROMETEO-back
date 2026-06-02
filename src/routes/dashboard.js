@@ -9,8 +9,55 @@ const { asyncHandler } = require('../http/asyncHandler');
 const { created, ok } = require('../http/responses');
 const { createHttpError } = require('../http/errors');
 const { serializeLinkedAccounts } = require('../services/linkedAccounts');
+const { encryptConfigSecrets } = require('../services/moduleSecrets');
 
 const router = express.Router();
+
+// El front es la primera línea de validación de módulos, pero se puede saltar llamando
+// al API directamente; por eso se valida también en el servidor antes de persistir.
+const GRID_COLS = 4;
+const GRID_ROWS = 5;
+const MAX_MODULE_CONFIG_BYTES = 32 * 1024;
+
+function assertModuleMeta(meta) {
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) {
+        throw createHttpError(400, 'MODULE_META_REQUIRED', 'Required module meta: {id, name, entry}');
+    }
+    for (const field of ['id', 'name', 'entry']) {
+        const value = meta[field];
+        if (typeof value !== 'string' || !value.trim() || value.length > 200) {
+            throw createHttpError(400, 'MODULE_META_INVALID', `meta.${field} must be a non-empty string (max 200 chars)`);
+        }
+    }
+}
+
+function assertModuleConfig(config) {
+    if (config === undefined) {
+        return;
+    }
+    if (config === null || typeof config !== 'object' || Array.isArray(config)) {
+        throw createHttpError(400, 'MODULE_CONFIG_INVALID', 'config must be an object');
+    }
+    if (JSON.stringify(config).length > MAX_MODULE_CONFIG_BYTES) {
+        throw createHttpError(400, 'MODULE_CONFIG_TOO_LARGE', 'config exceeds the allowed size');
+    }
+}
+
+function assertModulePosition(position) {
+    if (position === undefined || position === null) {
+        return;
+    }
+    if (typeof position !== 'object' || Array.isArray(position)) {
+        throw createHttpError(400, 'MODULE_POSITION_INVALID', 'position must be {x, y, w, h}');
+    }
+    const { x, y, w, h } = position;
+    if (![x, y, w, h].every((value) => Number.isInteger(value))) {
+        throw createHttpError(400, 'MODULE_POSITION_INVALID', 'position x/y/w/h must be integers');
+    }
+    if (x < 0 || y < 0 || w < 1 || h < 1 || x + w > GRID_COLS || y + h > GRID_ROWS) {
+        throw createHttpError(400, 'MODULE_POSITION_OUT_OF_BOUNDS', `position must fit within the ${GRID_COLS}x${GRID_ROWS} grid`);
+    }
+}
 
 function sortDateLikeDesc(items, fields) {
     return [...items].sort((left, right) => {
@@ -290,12 +337,12 @@ router.post('/pages/:id/modules', authenticateToken, asyncHandler(async (req, re
     assertValidId(req.params.id);
     const { meta, config = {}, position } = req.body || {};
 
-    if (!meta || !meta.id || !meta.name || !meta.entry) {
-        throw createHttpError(400, 'MODULE_META_REQUIRED', 'Required module meta: {id, name, entry}');
-    }
+    assertModuleMeta(meta);
+    assertModuleConfig(config);
+    assertModulePosition(position);
 
     const page = await findOwnedPage(req.params.id, req.user._id);
-    page.modules.push({ meta, config, position });
+    page.modules.push({ meta, config: encryptConfigSecrets(meta.id, config), position });
     page.updatedBy = req.user._id;
     await page.save();
 
@@ -315,9 +362,21 @@ router.patch('/pages/:id/modules/:moduleId', authenticateToken, asyncHandler(asy
         throw createHttpError(404, 'MODULE_NOT_FOUND', 'Module not found');
     }
 
-    if (meta !== undefined) moduleInstance.meta = meta;
-    if (config !== undefined) moduleInstance.config = config;
-    if (position !== undefined) moduleInstance.position = position;
+    const existingConfig = moduleInstance.config;
+    if (meta !== undefined) {
+        assertModuleMeta(meta);
+        moduleInstance.meta = meta;
+    }
+    if (config !== undefined) {
+        assertModuleConfig(config);
+        // Conserva/cifra los secretos: el placeholder reenviado por el cliente mantiene
+        // el valor existente; un valor nuevo se cifra antes de guardar.
+        moduleInstance.config = encryptConfigSecrets(moduleInstance.meta?.id, config, existingConfig);
+    }
+    if (position !== undefined) {
+        assertModulePosition(position);
+        moduleInstance.position = position;
+    }
 
     page.updatedBy = req.user._id;
     await page.save();
@@ -350,6 +409,8 @@ router.patch('/pages/:id/modules/reorder', authenticateToken, asyncHandler(async
     if (!Array.isArray(positions)) {
         throw createHttpError(400, 'MODULE_POSITIONS_REQUIRED', 'positions must be an array [{moduleId, position}]');
     }
+
+    positions.forEach((item) => assertModulePosition(item?.position));
 
     const page = await findOwnedPage(req.params.id, req.user._id);
     const positionMap = new Map(positions.map((item) => [String(item.moduleId), item.position]));

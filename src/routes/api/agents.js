@@ -8,6 +8,7 @@ const { asyncHandler } = require('../../http/asyncHandler');
 const { createHttpError } = require('../../http/errors');
 const { created, ok } = require('../../http/responses');
 const { listConnectedSocketSummaries, selectConnectedAgentSocket } = require('../../services/socketAgents');
+const { hashApiKey } = require('../../services/agentApiKey');
 const { assertObjectId } = require('./shared');
 
 const router = express.Router();
@@ -277,7 +278,7 @@ router.post('/agents', authenticateToken, authorizeRole('admin'), asyncHandler(a
         agentId,
         name,
         description,
-        apiKey,
+        apiKey: hashApiKey(apiKey),
         location,
         status: 'offline',
     });
@@ -289,7 +290,8 @@ router.post('/agents', authenticateToken, authorizeRole('admin'), asyncHandler(a
             agentId: newAgent.agentId,
             name: newAgent.name,
             description: newAgent.description,
-            apiKey: newAgent.apiKey,
+            // Única vez que se devuelve la clave en claro: en reposo solo queda el hash.
+            apiKey,
             status: newAgent.status,
             location: newAgent.location,
         },

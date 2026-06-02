@@ -55,7 +55,7 @@ function serializeTokens(tokens) {
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
         sessionId: tokens.sessionId,
-        expiresIn: null,
+        expiresIn: tokens.expiresIn ?? null,
     };
 }
 
@@ -102,6 +102,7 @@ async function handleOAuthLoginCallback(req, res, { provider, code, state, oauth
     }
 
     const returnOrigin = statePayload.returnOrigin;
+    const clientState = statePayload.clientState;
 
     if (oauthError) {
         return res.redirect(
@@ -109,6 +110,7 @@ async function handleOAuthLoginCallback(req, res, { provider, code, state, oauth
                 origin: returnOrigin,
                 status: 'error',
                 error: `OAuth provider returned an error: ${oauthError}`,
+                clientState,
             })
         );
     }
@@ -119,6 +121,7 @@ async function handleOAuthLoginCallback(req, res, { provider, code, state, oauth
                 origin: returnOrigin,
                 status: 'error',
                 error: 'No authorization code received from the provider.',
+                clientState,
             })
         );
     }
@@ -140,6 +143,7 @@ async function handleOAuthLoginCallback(req, res, { provider, code, state, oauth
                 origin: returnOrigin,
                 status: 'success',
                 tokens: serializeTokens(result.tokens),
+                clientState,
             })
         );
     } catch (err) {
@@ -157,6 +161,7 @@ async function handleOAuthLoginCallback(req, res, { provider, code, state, oauth
                 origin: returnOrigin,
                 status: 'error',
                 error: err.message || 'OAuth login failed.',
+                clientState,
             })
         );
     }

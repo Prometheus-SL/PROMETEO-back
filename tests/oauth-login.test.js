@@ -3,8 +3,23 @@ const test = require('node:test');
 const request = require('supertest');
 
 const User = require('../src/models/User');
-const { buildOAuthCallbackUrl } = require('../src/services/oauthLogin');
+const { buildOAuthCallbackUrl, isDesktopLoopbackOrigin } = require('../src/services/oauthLogin');
 const { createRouteApp } = require('./helpers/routeApp');
+
+test('isDesktopLoopbackOrigin treats only loopback IPs as desktop (HERMES), not localhost web', () => {
+    // HERMES desktop → larga duración
+    assert.equal(isDesktopLoopbackOrigin('http://127.0.0.1:46389'), true);
+    assert.equal(isDesktopLoopbackOrigin('http://[::1]:46389'), true);
+
+    // Web (dev en localhost, prod en dominio) → caduca normal
+    assert.equal(isDesktopLoopbackOrigin('http://localhost:5173'), false);
+    assert.equal(isDesktopLoopbackOrigin('https://prometeo.miguelprez.es'), false);
+
+    // Entradas inválidas → false
+    assert.equal(isDesktopLoopbackOrigin(''), false);
+    assert.equal(isDesktopLoopbackOrigin(null), false);
+    assert.equal(isDesktopLoopbackOrigin('not-a-url'), false);
+});
 
 test('OAuth callback puts tokens in the URL fragment, not query params', () => {
     const url = new URL(buildOAuthCallbackUrl({
@@ -26,6 +41,29 @@ test('OAuth callback puts tokens in the URL fragment, not query params', () => {
     assert.equal(fragment.get('accessToken'), 'access-token');
     assert.equal(fragment.get('refreshToken'), 'refresh-token');
     assert.equal(fragment.get('sessionId'), 'session-1');
+});
+
+test('OAuth callback echoes clientState in the fragment only when provided', () => {
+    const withState = new URL(buildOAuthCallbackUrl({
+        origin: 'http://127.0.0.1:46389',
+        status: 'success',
+        tokens: { accessToken: 'a', refreshToken: 'r', sessionId: 's' },
+        clientState: 'nonce-123',
+    }));
+    assert.equal(
+        new URLSearchParams(withState.hash.slice(1)).get('clientState'),
+        'nonce-123',
+    );
+
+    const withoutState = new URL(buildOAuthCallbackUrl({
+        origin: 'http://127.0.0.1:46389',
+        status: 'success',
+        tokens: { accessToken: 'a', refreshToken: 'r', sessionId: 's' },
+    }));
+    assert.equal(
+        new URLSearchParams(withoutState.hash.slice(1)).get('clientState'),
+        null,
+    );
 });
 
 test('password is required for password users but optional for OAuth users', () => {

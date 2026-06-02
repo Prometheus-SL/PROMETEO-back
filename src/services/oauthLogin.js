@@ -198,17 +198,33 @@ function getOAuthRedirectUri(provider) {
     return linkRedirect;
 }
 
+function sanitizeClientState(value) {
+    if (typeof value !== 'string') {
+        return null;
+    }
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > 200) {
+        return null;
+    }
+    return trimmed;
+}
+
 function buildOAuthLoginUrl(provider, req) {
     assertValidProvider(provider);
     const config = PROVIDER_CONFIG[provider];
     const { clientId } = config.assertConfigured();
     const redirectUri = getOAuthRedirectUri(provider);
     const returnOrigin = resolveReturnOrigin(req);
+    // Nonce generado por el cliente (p. ej. HERMES desktop). Se firma en el state y se
+    // devuelve en el fragmento del callback para que el cliente verifique que ese
+    // callback corresponde a ESTE intento de login (anti session-fixation).
+    const clientState = sanitizeClientState(req.body?.clientState);
 
     const state = signOAuthLoginState({
         provider,
         returnOrigin,
         nonce: crypto.randomUUID(),
+        ...(clientState ? { clientState } : {}),
     });
 
     return config.buildAuthorizeParams(clientId, redirectUri, config.scopes, state);
@@ -231,6 +247,23 @@ async function generateUniqueUsername(displayName) {
     }
 
     return `user${crypto.randomUUID().slice(0, 8)}`;
+}
+
+// HERMES desktop completa el login OAuth con un callback en loopback
+// (http://127.0.0.1:46389). Es un dispositivo persistente y de confianza, así que
+// recibe una sesión de larga duración (como el kiosko por QR) para no deslogearse
+// solo. El front web de dev usa `localhost` (no 127.0.0.1), por lo que no se ve afectado.
+function isDesktopLoopbackOrigin(origin) {
+    if (!origin) {
+        return false;
+    }
+
+    try {
+        const host = new URL(origin).hostname;
+        return host === '127.0.0.1' || host === '::1' || host === '[::1]';
+    } catch (_error) {
+        return false;
+    }
 }
 
 async function completeOAuthLogin(provider, code, statePayload, reqMeta) {
@@ -288,7 +321,8 @@ async function completeOAuthLogin(provider, code, statePayload, reqMeta) {
 
     config.persistTokens(user, tokenPayload, rawProfile, { touchConnectedAt: true });
 
-    const tokens = generateTokens(user);
+    const longLived = isDesktopLoopbackOrigin(statePayload?.returnOrigin);
+    const tokens = generateTokens(user, { longLived });
     user.registerSession({
         sessionId: tokens.sessionId,
         refreshToken: tokens.refreshToken,
@@ -310,13 +344,17 @@ function sanitizeCallbackErrorMessage(error) {
     return String(error || 'An error occurred during OAuth login.').slice(0, 180);
 }
 
-function buildOAuthCallbackUrl({ origin, status, error, tokens }) {
+function buildOAuthCallbackUrl({ origin, status, error, tokens, clientState }) {
     const callbackUrl = new URL('/oauth/callback', origin || getDefaultClientOrigin());
     const fragment = new URLSearchParams();
     fragment.set('status', status);
 
     if (error) {
         fragment.set('error', sanitizeCallbackErrorMessage(error));
+    }
+
+    if (clientState) {
+        fragment.set('clientState', clientState);
     }
 
     if (tokens) {
@@ -338,6 +376,7 @@ module.exports = {
     buildOAuthLoginUrl,
     completeOAuthLogin,
     generateUniqueUsername,
+    isDesktopLoopbackOrigin,
     signOAuthLoginState,
     verifyOAuthLoginState,
 };

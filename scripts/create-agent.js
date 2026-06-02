@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const Agent = require('../src/models/Agent');
+const { hashApiKey } = require('../src/services/agentApiKey');
 require('dotenv').config();
 
 const createExampleAgent = async () => {
@@ -17,7 +18,7 @@ const createExampleAgent = async () => {
             agentId: 'sensor-001',
             name: 'Sensor de Temperatura Principal',
             description: 'Sensor de temperatura y humedad ubicado en el laboratorio principal',
-            apiKey: apiKey,
+            apiKey: hashApiKey(apiKey),
             location: {
                 name: 'Laboratorio Principal',
                 coordinates: {
@@ -47,7 +48,7 @@ const createExampleAgent = async () => {
             agentId: 'sensor-002',
             name: 'Sensor de Presión Atmosférica',
             description: 'Sensor de presión atmosférica en la estación meteorológica',
-            apiKey: apiKey2,
+            apiKey: hashApiKey(apiKey2),
             location: {
                 name: 'Estación Meteorológica',
                 coordinates: {

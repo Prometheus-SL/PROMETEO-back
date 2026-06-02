@@ -26,7 +26,10 @@ const agentSchema = new mongoose.Schema({
     apiKey: {
         type: String,
         required: [true, 'API Key es requerida'],
-        unique: true
+        unique: true,
+        // No se devuelve por defecto: hay que pedirla con .select('+apiKey').
+        // Evita filtrarla en las muchas consultas que devuelven el doc del agente.
+        select: false
     },
     isActive: {
         type: Boolean,

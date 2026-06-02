@@ -3,9 +3,41 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Agent = require('../models/Agent');
 const { createHttpError } = require('../http/errors');
+const { hashApiKey, isHashedApiKey } = require('../services/agentApiKey');
 
 function createAuthError(status, code, message) {
     return createHttpError(status, code, message);
+}
+
+// Resuelve una duración de token desde una variable de entorno.
+// Devuelve `null` (sin caducidad) para valores vacíos o 'never'/'none'/'0'/'false'.
+function resolveTtl(rawValue, fallback) {
+    if (rawValue === undefined || rawValue === null || rawValue === '') {
+        return fallback;
+    }
+
+    const normalized = String(rawValue).trim();
+    if (['never', 'none', '0', 'false', 'infinite'].includes(normalized.toLowerCase())) {
+        return null;
+    }
+
+    return normalized;
+}
+
+// Login web/normal: caduca (configurable). Login de kiosko (QR): por defecto no caduca.
+const ACCESS_TOKEN_TTL = resolveTtl(process.env.JWT_ACCESS_TTL, '1h');
+const REFRESH_TOKEN_TTL = resolveTtl(process.env.JWT_REFRESH_TTL, '30d');
+const KIOSK_ACCESS_TOKEN_TTL = resolveTtl(process.env.JWT_KIOSK_ACCESS_TTL, null);
+const KIOSK_REFRESH_TOKEN_TTL = resolveTtl(process.env.JWT_KIOSK_REFRESH_TTL, null);
+
+// Segundos que faltan para que caduque un token, o `null` si no lleva `exp`.
+function tokenExpiresInSeconds(token) {
+    const decoded = jwt.decode(token);
+    if (!decoded || typeof decoded.exp !== 'number') {
+        return null;
+    }
+
+    return Math.max(0, decoded.exp - Math.floor(Date.now() / 1000));
 }
 
 function extractBearerToken(req) {
@@ -24,8 +56,12 @@ function extractBearerToken(req) {
 
 function decodeJwt(token, secret, invalidMessage, invalidCode) {
     try {
-        return jwt.verify(token, secret, { ignoreExpiration: true });
-    } catch (_error) {
+        return jwt.verify(token, secret);
+    } catch (error) {
+        if (error && error.name === 'TokenExpiredError') {
+            // 401 (no 403) para que el cliente dispare el flujo de refresh.
+            throw createAuthError(401, 'TOKEN_EXPIRED', 'The token has expired');
+        }
         throw createAuthError(403, invalidCode, invalidMessage);
     }
 }
@@ -176,7 +212,11 @@ const authenticateAgent = async (req, _res, next) => {
             return next(createHttpError(401, 'API_KEY_REQUIRED', 'API key is required'));
         }
 
-        const agent = await Agent.findOne({ apiKey, isActive: { $ne: false } });
+        // Coincide con la apiKey hasheada (nueva) o en claro (legacy) y migra esta última.
+        const agent = await Agent.findOne({
+            apiKey: { $in: [hashApiKey(apiKey), apiKey] },
+            isActive: { $ne: false },
+        }).select('+apiKey');
         if (!agent) {
             return next(createHttpError(403, 'INVALID_API_KEY', 'API key is invalid or the agent is inactive'));
         }
@@ -185,6 +225,9 @@ const authenticateAgent = async (req, _res, next) => {
             return next(createHttpError(403, 'AGENT_ID_MISMATCH', 'Agent ID does not match the API key owner'));
         }
 
+        if (!isHashedApiKey(agent.apiKey)) {
+            agent.apiKey = hashApiKey(apiKey);
+        }
         agent.lastSeen = new Date();
         await agent.save();
 
@@ -214,6 +257,14 @@ const optionalAuth = async (req, _res, next) => {
 
 const generateTokens = (user, options = {}) => {
     const sessionId = options.sessionId || crypto.randomUUID();
+    const kiosk = options.kiosk === true || options.longLived === true;
+
+    const accessTtl = options.accessTtl !== undefined
+        ? options.accessTtl
+        : (kiosk ? KIOSK_ACCESS_TOKEN_TTL : ACCESS_TOKEN_TTL);
+    const refreshTtl = options.refreshTtl !== undefined
+        ? options.refreshTtl
+        : (kiosk ? KIOSK_REFRESH_TOKEN_TTL : REFRESH_TOKEN_TTL);
 
     const accessToken = jwt.sign(
         {
@@ -224,7 +275,8 @@ const generateTokens = (user, options = {}) => {
             sessionId,
             type: 'access',
         },
-        process.env.JWT_SECRET
+        process.env.JWT_SECRET,
+        accessTtl ? { expiresIn: accessTtl } : undefined
     );
 
     const refreshToken = jwt.sign(
@@ -233,10 +285,16 @@ const generateTokens = (user, options = {}) => {
             sessionId,
             type: 'refresh',
         },
-        process.env.JWT_REFRESH_SECRET
+        process.env.JWT_REFRESH_SECRET,
+        refreshTtl ? { expiresIn: refreshTtl } : undefined
     );
 
-    return { accessToken, refreshToken, sessionId, expiresIn: null };
+    return {
+        accessToken,
+        refreshToken,
+        sessionId,
+        expiresIn: tokenExpiresInSeconds(accessToken),
+    };
 };
 
 const verifyRefreshToken = async (req, _res, next) => {

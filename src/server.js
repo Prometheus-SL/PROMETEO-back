@@ -1,5 +1,4 @@
 const http = require('http');
-const { randomBytes } = require('crypto');
 const { Server } = require('socket.io');
 const app = require('./app');
 const { createSocketCorsOptions, getCorsSettings } = require('./config/cors');
@@ -179,56 +178,25 @@ function emitToAuthorizedFrontends(event, payload, ownerUserId) {
 }
 
 async function attachAgentOwnership(userId, agentId) {
-    // Atomic upsert: create if not exists, otherwise return existing doc
-    const agentDoc = await Agent.findOneAndUpdate(
-        { agentId },
-        {
-            $setOnInsert: {
-                agentId,
-                name: agentId,
-                description: 'Agente creado desde socket',
-                apiKey: randomBytes(32).toString('hex'),
-                user: userId,
-                status: 'offline'
-            }
-        },
-        { upsert: true, new: true }
-    );
+    // El registro y la propiedad de un agente se establecen en POST /auth/agent/login.
+    // El canal de telemetría (socket) NO crea ni reclama agentes: solo permite conectar
+    // agentes que YA pertenecen al usuario autenticado. Así un usuario no puede apropiarse
+    // de un agentId ajeno o sin dueño con solo enviarlo en `identify`.
+    const agentDoc = await Agent.findOne({ agentId });
 
-    if (!agentDoc.isActive) {
+    if (!agentDoc) {
+        const error = new Error('Agente no registrado. Autentica el agente (agent/login) antes de conectarlo.');
+        error.status = 404;
+        throw error;
+    }
+
+    if (agentDoc.isActive === false) {
         const error = new Error('El agente está desactivado');
         error.status = 403;
         throw error;
     }
 
-    if (!agentDoc.user) {
-        const claimedAgent = await Agent.findOneAndUpdate(
-            {
-                agentId,
-                $or: [
-                    { user: { $exists: false } },
-                    { user: null }
-                ]
-            },
-            { $set: { user: userId } },
-            { new: true }
-        );
-
-        if (claimedAgent) {
-            return claimedAgent;
-        }
-
-        const latestAgent = await Agent.findOne({ agentId });
-        if (latestAgent?.user && String(latestAgent.user) !== String(userId)) {
-            const error = new Error('Este agente pertenece a otro usuario');
-            error.status = 403;
-            throw error;
-        }
-
-        return latestAgent || agentDoc;
-    }
-
-    if (String(agentDoc.user) !== String(userId)) {
+    if (!agentDoc.user || String(agentDoc.user) !== String(userId)) {
         const error = new Error('Este agente pertenece a otro usuario');
         error.status = 403;
         throw error;
@@ -419,7 +387,19 @@ io.on('connection', (socket) => {
             return;
         }
 
-        socket.to('agents').emit('data-request', request);
+        // Admin/operator pueden consultar toda la flota; un usuario normal solo SUS agentes.
+        // Evita que un usuario fuerce a responder a agentes de otros (fuga cross-tenant).
+        if (['admin', 'operator'].includes(socket.userRole)) {
+            socket.to('agents').emit('data-request', request);
+            return;
+        }
+
+        const requesterId = String(socket.userId);
+        for (const entry of agentState.connectedAgents.values()) {
+            if (String(entry.userId) === requesterId) {
+                io.to(entry.socketId).emit('data-request', request);
+            }
+        }
     });
 
     socket.on('command-received', async (data = {}) => {

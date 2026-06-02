@@ -24,21 +24,47 @@ async function ensureBot(_req, _res, next) {
     }
 }
 
+// Solo administradores/owners del guild pueden leer sus miembros o gestionar su voz.
+// Evita IDOR: sin esto, cualquier usuario autenticado podía operar sobre cualquier
+// guild donde esté el bot. Reutiliza el mismo gate que las rutas de notificaciones.
+async function requireGuildAdmin(req, _res, next) {
+    try {
+        const { guildId } = req.params;
+        const { needsLink, needsReauth, guilds } = await getUserAdminGuilds(req.user._id);
+
+        if (needsLink) {
+            return next(createHttpError(403, 'DISCORD_NOT_LINKED', 'Link your Discord account to manage this server'));
+        }
+        if (needsReauth) {
+            return next(createHttpError(403, 'DISCORD_REAUTH_REQUIRED', 'Reconnect your Discord account to manage this server'));
+        }
+
+        const isAdmin = Array.isArray(guilds) && guilds.some((g) => String(g.id) === String(guildId));
+        if (!isAdmin) {
+            return next(createHttpError(403, 'DISCORD_GUILD_FORBIDDEN', 'You are not an administrator of this server'));
+        }
+
+        next();
+    } catch (error) {
+        next(error);
+    }
+}
+
 router.get('/status', authenticateToken, ensureBot, asyncHandler(async (_req, res) => {
     return ok(res, getStatus());
 }));
 
-router.get('/guilds/:guildId', authenticateToken, ensureBot, asyncHandler(async (req, res) => {
+router.get('/guilds/:guildId', authenticateToken, ensureBot, requireGuildAdmin, asyncHandler(async (req, res) => {
     const data = await getGuildInfo(req.params.guildId);
     return ok(res, data);
 }));
 
-router.post('/guilds/:guildId/voice/:userId/disconnect', authenticateToken, ensureBot, asyncHandler(async (req, res) => {
+router.post('/guilds/:guildId/voice/:userId/disconnect', authenticateToken, ensureBot, requireGuildAdmin, asyncHandler(async (req, res) => {
     const data = await disconnectVoiceMember(req.params.guildId, req.params.userId);
     return ok(res, data);
 }));
 
-router.post('/guilds/:guildId/voice/:userId/mute', authenticateToken, ensureBot, asyncHandler(async (req, res) => {
+router.post('/guilds/:guildId/voice/:userId/mute', authenticateToken, ensureBot, requireGuildAdmin, asyncHandler(async (req, res) => {
     const mute = req.body?.mute !== false;
     const data = await setVoiceMute(req.params.guildId, req.params.userId, mute);
     return ok(res, data);

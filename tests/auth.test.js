@@ -272,6 +272,37 @@ test('POST /auth/refresh returns the refreshed token envelope', async (t) => {
     assert.equal(registeredSession.sessionId, 'session-1');
 });
 
+test('POST /auth/login sets the refresh token as an HttpOnly cookie', async (t) => {
+    const loginUser = createMockUser({ matchPassword: async (password) => password === 'secret' });
+    const { app, cleanup } = createAuthRouteApp({ loginUser });
+    t.after(cleanup);
+
+    const response = await request(app)
+        .post('/auth/login')
+        .send({ username: 'mike', password: 'secret' });
+
+    assert.equal(response.status, 200);
+    const cookies = response.headers['set-cookie'] || [];
+    const refreshCookie = cookies.find((cookie) => cookie.startsWith('prometeo_rt='));
+    assert.ok(refreshCookie, 'should set the prometeo_rt cookie');
+    assert.match(refreshCookie, /HttpOnly/i);
+    assert.match(refreshCookie, /Path=\/auth/i);
+});
+
+test('POST /auth/refresh accepts the refresh token from the cookie when the body is empty', async (t) => {
+    const { app, cleanup } = createAuthRouteApp();
+    t.after(cleanup);
+
+    const response = await request(app)
+        .post('/auth/refresh')
+        .set('Cookie', 'prometeo_rt=cookie-refresh-token')
+        .send({});
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.success, true);
+    assert.equal(response.body.data.accessToken, 'access-token');
+});
+
 test('GET /auth/login-history returns history and entries aliases', async (t) => {
     const loginHistoryEntries = [
         {
