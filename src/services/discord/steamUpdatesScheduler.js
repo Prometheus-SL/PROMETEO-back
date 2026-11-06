@@ -122,29 +122,32 @@ function createSteamUpdatesScheduler({
                 if (result.skipped) continue;
                 guildsTouched += 1;
 
-                let guildAdvanced = false;
-                for (let i = 0; i < config.gameUpdates.subscriptions.length; i += 1) {
-                    const sub = config.gameUpdates.subscriptions[i];
+                // Write only the fields this tick owns, per subscription, matched by appId. A whole
+                // document save() fails with a VersionError whenever another writer (the API, another
+                // scheduler) saved the same config since find(), and would also undo their changes.
+                const $set = {};
+                const arrayFilters = [];
+                config.gameUpdates.subscriptions.forEach((sub, i) => {
                     const subResult = result.perSub.find((r) => r.appId === sub.appId);
-                    if (!subResult) continue;
+                    if (!subResult) return;
+                    const alias = `s${i}`;
+                    const path = `gameUpdates.subscriptions.$[${alias}]`;
+                    arrayFilters.push({ [`${alias}.appId`]: sub.appId });
                     if (subResult.error) {
-                        sub.lastError = subResult.error.message || String(subResult.error);
-                        continue;
+                        $set[`${path}.lastError`] = subResult.error.message || String(subResult.error);
+                        return;
                     }
-                    sub.lastError = null;
-                    sub.lastNotifiedGids = subResult.nextGids;
+                    $set[`${path}.lastError`] = null;
+                    $set[`${path}.lastNotifiedGids`] = subResult.nextGids;
                     if (subResult.sent.length > 0) {
-                        sub.lastNotifiedAt = new Date();
+                        $set[`${path}.lastNotifiedAt`] = new Date();
                         totalSent += subResult.sent.length;
-                        guildAdvanced = true;
-                    } else {
-                        guildAdvanced = true;
                     }
-                }
+                });
 
-                if (guildAdvanced) {
+                if (arrayFilters.length > 0) {
                     try {
-                        await config.save();
+                        await GuildNotificationConfig.updateOne({ _id: config._id }, { $set }, { arrayFilters });
                     } catch (err) {
                         logger.error(`[SteamUpdates] Persist failed for guild ${config.guildId}: ${err.message}`);
                     }

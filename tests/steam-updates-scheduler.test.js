@@ -200,3 +200,46 @@ test('tickGuildGameUpdates skips subs whose appId has no items (fetch failure up
     assert.equal(result.perSub[0].error, null);
     assert.deepEqual(result.perSub[0].nextGids, []);
 });
+
+test('runTick persists each subscription with an atomic update by appId, never a whole-document save', async () => {
+    const { createSteamUpdatesScheduler } = require('../src/services/discord/steamUpdatesScheduler');
+    const config = makeConfig({
+        subscriptions: [
+            { appId: 10, name: 'A', lastNotifiedGids: ['old'] },
+            { appId: 20, name: 'B', lastNotifiedGids: [] },
+        ],
+    });
+    config._id = 'cfg-1';
+    config.save = async () => {
+        const err = new Error('No matching document found for id "cfg-1" version 3');
+        err.name = 'VersionError';
+        throw err;
+    };
+    const updates = [];
+    const GuildNotificationConfig = {
+        async find() { return [config]; },
+        async updateOne(filter, update, options) { updates.push({ filter, update, options }); return { matchedCount: 1 }; },
+    };
+    const provider = {
+        async fetchLatestUpdates(appId) { return appId === 10 ? [item('new'), item('old')] : []; },
+    };
+    const errors = [];
+    const logger = { info() {}, warn() {}, error(msg) { errors.push(msg); } };
+    const scheduler = createSteamUpdatesScheduler({
+        GuildNotificationConfig, provider, messenger: makeMessenger(), channelStateStore: makeChannelStore(), logger,
+    });
+
+    await scheduler.runTick();
+
+    assert.deepEqual(errors, []);
+    assert.equal(updates.length, 1);
+    const [{ filter, update, options }] = updates;
+    assert.deepEqual(filter, { _id: 'cfg-1' });
+    const setKeys = Object.keys(update.$set).sort();
+    assert.ok(setKeys.every((k) => k.startsWith('gameUpdates.subscriptions.$[')), setKeys.join());
+    const filterFor10 = options.arrayFilters.find((f) => Object.values(f)[0] === 10);
+    assert.ok(filterFor10, 'an arrayFilter targets appId 10');
+    const alias = Object.keys(filterFor10)[0].split('.')[0];
+    assert.deepEqual(update.$set[`gameUpdates.subscriptions.$[${alias}].lastNotifiedGids`], ['old', 'new']);
+    assert.equal(update.$set[`gameUpdates.subscriptions.$[${alias}].lastError`], null);
+});
