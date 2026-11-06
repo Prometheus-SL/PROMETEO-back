@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { ensureTtlIndex } = require('./ttlIndexRepair');
 
 // Configuración de conexión a MongoDB
 const connectDB = async () => {
@@ -18,6 +19,13 @@ const connectDB = async () => {
             }
         } catch (cleanupErr) {
             console.warn('No se pudo revisar/eliminar índice TTL de usuarios:', cleanupErr.message);
+        }
+
+        try {
+            const result = await ensureTtlIndex(mongoose.connection.db.collection('sparkruns'), 'expiresAt');
+            if (result !== 'ok') console.log(`🧹 Índice TTL de sparkruns.expiresAt: ${result}`);
+        } catch (ttlErr) {
+            console.warn('No se pudo revisar el índice TTL de sparkruns:', ttlErr.message);
         }
 
         // Eventos de conexión

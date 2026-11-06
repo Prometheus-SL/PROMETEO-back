@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, PermissionsBitField } = require('discord.js');
+const { Client, Events, GatewayIntentBits, PermissionsBitField } = require('discord.js');
 const GuildNotificationConfig = require('../../models/GuildNotificationConfig');
 const { createEpicFreeGamesProvider } = require('./providers/epicFreeGames');
 const { createDiscordNewsMessenger } = require('./newsMessenger');
@@ -119,7 +119,7 @@ async function initBot() {
                 resolve();
                 return;
             }
-            client.once('ready', () => {
+            client.once(Events.ClientReady, () => {
                 ready = true;
                 console.log(`[Discord] Bot conectado como ${client.user.tag}`);
                 startNewsSchedulerIfNeeded(client);
