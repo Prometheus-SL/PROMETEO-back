@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+!.env.example
+node_modules
+tests
+docs
+examples
+.wwebjs_auth
+.wwebjs_cache
